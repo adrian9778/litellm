@@ -122,7 +122,7 @@ litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: c
 |---|---|
 | 职责 | 鉴权后的全部请求加工：注入、配置合并、Logging 构建、hook 执行 |
 | 参数 | `request`、`general_settings`、`proxy_logging_obj`、`user_api_key_dict`、`route_type`、`proxy_config`、`llm_router`、`user_model` 等 |
-| 返回 | `self.data, logging_obj`——调用方按 `self.data, logging_obj = await self._pre_call_with_fallbacks(...)` 解包（`common_request_processing.py:2712`） |
+| 返回 | `self.data, logging_obj`——调用方按 `self.data, logging_obj = await self._pre_call_with_fallbacks(...)` 解包（`common_request_processing.py :: ProxyBaseLLMRequestProcessing :: _pre_call_with_fallbacks()` 尾部 return） |
 | 前置 | `self.data` 已含 metadata |
 | 后置 | `data["litellm_logging_obj"]` 就位；限流已扣减（hook 内） |
 
@@ -143,7 +143,7 @@ litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: g
 | 参数 | `user_api_key_dict`、`call_id`、`model_id`、`response_cost`、`hidden_params`、`litellm_logging_obj` 等（全关键字参数） |
 | 返回 | `dict[str, str]` |
 | 核心算法 | 值解析链：显式参数 → `hidden_params` → `request_data` → logging_obj 计时（`read_timing_from_logging_obj` 控制）；空值统一剔除（`exclude_values = {"", None, "None"}`） |
-| 后置 | 头在 `litellm/constants.py` 的常量约束下（如 `x-litellm-response-cost`，`common_request_processing.py:1921` 的字面量） |
+| 后置 | 头在 `litellm/constants.py` 的常量约束下（如 `x-litellm-response-cost`，`common_request_processing.py :: cost_headers() :: +14` 的字面量） |
 
 ## 8. `read_request_body()`
 

@@ -32,7 +32,7 @@
 ## 路径 A：OpenAI SDK（本场景）
 
 ```
-litellm/llms/openai/openai.py :: OpenAIChatCompletion :: completion() :: +0（同步，706 行处）
+litellm/llms/openai/openai.py :: OpenAIChatCompletion :: completion() :: +0（同步路径）
 ```
 
 流程：
@@ -48,8 +48,8 @@ OpenAI 格式本身无需翻译，这条路的主要工作是凭证、客户端�
 ## 路径 B：统一 httpx handler
 
 ```
-litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: completion() :: +0（868 行处）
-litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: async_completion() :: +0（795 行处）
+litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: completion() :: +0
+litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: async_completion() :: +0
 ```
 
 以异步版为例（`async_completion` 的内部顺序，`+0 至 +150`）：

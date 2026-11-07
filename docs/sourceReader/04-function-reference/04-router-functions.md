@@ -139,7 +139,7 @@ litellm/router_utils/cooldown_handlers.py :: set_cooldown_deployments() :: +0
 | 函数 | 职责 |
 |---|---|
 | `async_get_cooldown_deployments` | 读冷却中的部署 id 集（DualCache，多 worker 共享） |
-| `set_cooldown_deployments` | 失败后写入冷却（`allowed_fails` 判定 + `cooldown_time` 窗口）；调用点在 `_acompletion` 异常路径（`router_python_core.py:10481`、`10873`） |
+| `set_cooldown_deployments` | 失败后写入冷却（`allowed_fails` 判定 + `cooldown_time` 窗口）；调用点在 `_acompletion` 异常路径（`router_python_core.py :: PythonCore :: _acompletion()` 内两处） |
 
 ## 9. 类型与边界
 

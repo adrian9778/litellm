@@ -24,7 +24,7 @@ litellm/main.py :: acompletion() :: +0
 4. `+261`：fallbacks 非空 → `async_completion_with_fallbacks(**completion_kwargs, kwargs={"fallbacks": ..., **caller_kwargs})`
 5. `+271`：mock 参数短路（`mock_delay` + `should_run_mock_completion`）
 6. `+284` 至 `+293`：同步 `completion()` 打包为 partial，`contextvars.copy_context()` 保留上下文，`loop.run_in_executor(None, func_with_context)` 执行
-7. `+295` 至 `+320`：返回值归一——dict → `ModelResponse`（`litellm/main.py :: _model_response_from_cached_dict() :: +0`，1010 行处）、协程 → await（`litellm/main.py :: _resolve_dispatched_chat_response() :: +0`，1004 行处）
+7. `+295` 至 `+320`：返回值归一——dict → `ModelResponse`（`litellm/main.py :: _model_response_from_cached_dict() :: +0`）、协程 → await（`litellm/main.py :: _resolve_dispatched_chat_response() :: +0`）
 8. `+330` 附近：text-completion provider 的响应对象转换
 9. 尾部：agentic loop 接入点（`maybe_run_chat_completion_agentic_loop`，注释写明这是所有 provider 的汇聚点）
 

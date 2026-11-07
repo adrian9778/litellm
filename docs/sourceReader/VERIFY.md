@@ -42,3 +42,15 @@
 ## 偏移换算规则备忘
 
 文档统一 `+0` = 定义行本身，`+N` = 定义行向下第 N 行。文中形如「+0（NNNN 行处）」的括号行号是生成时快照，仅帮助定位，漂移以偏移语义为准。
+
+## 2026-11-07 规范化刷新（source-doc-refresh）
+
+- **漂移审计**：基准 `3f4dc93b40` 与 HEAD 间上游代码 **0 commit**（仅本库自身提交），16 组核心「文件+符号」抽检全部命中，无需内容重写
+- **记法净化**：清除全部 41 处绝对行号残留（28 处 `（NNNN 行处）` 快照 + 13 处 `py:NNNN`/裸行号），全库改为纯「符号 + 偏移」定位；快照行号仅保留于本文件历史记录
+- **符号级校验纠错**（verify 之外另跑 `--symbols` 抓出，属「文件对、符号错」类硬伤）：
+  1. `02-full-path-trace.md` 的 `_common_response_headers()` 系臆造名，实际是 `common_request_processing.py :: cost_headers()`
+  2. `08-cost-logging-persistence.md` 的 `async_log_failure_event` 系臆造名，实际是 `_ProxyDBLogger :: async_post_call_failure_hook()`
+  3. `01-what-is-litellm.md` 把 `make_core()` 归到 `router.py`（实际定义在 `router_core.py`，router.py 只是调用方）
+  4. `07-provider-transform-functions.md` §7 的 BaseConfig 路径仍指旧文件 `base_llm/completion_transformation.py`，已改 `base_llm/chat/transformation.py`
+- **上游文档扫描（4b）**：全仓库 AGENTS.md + ARCHITECTURE.md 用同一工具体检，发现并修复 1 处真实路径失效（`tests/e2e/AGENTS.md` 的 fixture 路径，实际在 `tests/e2e/ui/fixtures/` 下）；其余命中均为占位名/尾段缩写等合法形态
+- **工具落地**：`.progress/sr_tools.py`（locate/outline/offset/verify --symbols，带缓存）、`.progress/UPDATE-SPEC.md`、`.progress/state.json`、`.progress/tasks.json`；全库与上游扫描 exit=0

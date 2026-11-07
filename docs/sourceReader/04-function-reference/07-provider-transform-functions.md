@@ -7,15 +7,15 @@
 ## 0. 类定义
 
 ```
-litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: +0（543 行处）
+litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: +0
 ```
 
-继承 `AnthropicModelInfo, BaseConfig`（`BaseConfig` 定义在 `litellm/llms/base_llm/chat/transformation.py :: BaseConfig :: +0`，91 行处；`AnthropicModelInfo` 在 `litellm/llms/anthropic/common_utils.py :: AnthropicModelInfo :: +0`，700 行处）。无实例状态，方法是纯变换。
+继承 `AnthropicModelInfo, BaseConfig`（`BaseConfig` 定义在 `litellm/llms/base_llm/chat/transformation.py :: BaseConfig :: +0`；`AnthropicModelInfo` 在 `litellm/llms/anthropic/common_utils.py :: AnthropicModelInfo :: +0`）。无实例状态，方法是纯变换。
 
 ## 1. `get_supported_openai_params()`
 
 ```
-litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: get_supported_openai_params() :: +0（829 行处）
+litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: get_supported_openai_params() :: +0
 ```
 
 | 项 | 内容 |
@@ -24,12 +24,12 @@ litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: get_supporte
 | 返回 | `list[str]` |
 | 核心算法 | 基础列表（`stream`、`stop`、`temperature`、`top_p`、`max_tokens`、`tools`、`response_format`、`cache_control` 等 16 项，见 `+2` 至 `+22`）；按模型能力动态追加：`thinking`/`reasoning_effort` 仅当模型名含 `claude-3-7-sonnet` 或 `supports_reasoning()` 为真（`+25` 至 `+37`）；`service_tier` 按 provider 集合（`+39`） |
 
-消费方：`get_optional_params`（`litellm/utils.py:5505`）拿它决定「传了不支持的参数怎么办」。
+消费方：`get_optional_params`（`litellm/utils.py :: get_optional_params() :: +0`）拿它决定「传了不支持的参数怎么办」。
 
 ## 2. `map_openai_params()`
 
 ```
-litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: map_openai_params() :: +0（1920 行处）
+litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: map_openai_params() :: +0
 ```
 
 | 项 | 内容 |
@@ -40,7 +40,7 @@ litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: map_openai_p
 ## 3. `transform_request()`
 
 ```
-litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: transform_request() :: +0（2395 行处）
+litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: transform_request() :: +0
 ```
 
 | 项 | 内容 |
@@ -60,13 +60,13 @@ litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: transform_re
 5. `+110`：`split_leading_system_run(request_messages)`——只把**开头连续**的 system 消息提升为顶层 `system` 字段；中段的 system 消息保持原位（注释解释：提升会改写缓存前缀）
 6. `+112`：`optional_params["system"] = anthropic_system_message_list`
 7. `+117`：中段 system 的位置处理（按模型是否支持 mid-conversation system 分支）
-8. `+129`：`anthropic_messages_pt(...)`（`litellm/litellm_core_utils/prompt_templates/factory.py :: anthropic_messages_pt :: +0`，2976 行处）做消息体逐条翻译（role/content/tool_use/tool_result 九种块）
+8. `+129`：`anthropic_messages_pt(...)`（`litellm/litellm_core_utils/prompt_templates/factory.py :: anthropic_messages_pt :: +0`）做消息体逐条翻译（role/content/tool_use/tool_result 九种块）
 9. `+151`：`strip_advisor_blocks_from_messages` 清理非 Anthropic 块
 
 ## 4. `transform_response()`
 
 ```
-litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: transform_response() :: +0（3298 行处）
+litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: transform_response() :: +0
 ```
 
 | 项 | 内容 |
@@ -81,7 +81,7 @@ litellm/llms/anthropic/chat/transformation.py :: AnthropicConfig :: transform_re
 ## 5. `validate_environment()`
 
 ```
-litellm/llms/anthropic/common_utils.py :: AnthropicModelInfo :: validate_environment() :: +0（1549 行处，AnthropicConfig 经继承获得）
+litellm/llms/anthropic/common_utils.py :: AnthropicModelInfo :: validate_environment() :: +0（AnthropicConfig 经继承获得）
 ```
 
 | 项 | 内容 |
@@ -92,7 +92,7 @@ litellm/llms/anthropic/common_utils.py :: AnthropicModelInfo :: validate_environ
 
 ## 6. URL 的真实来源
 
-`AnthropicConfig` **不覆写** `get_complete_url`，用的是 `BaseConfig` 默认实现（`litellm/llms/base_llm/chat/transformation.py :: BaseConfig :: get_complete_url() :: +0`，350 行处：api_base 为空抛 ValueError，否则原样返回）。URL 在更早的 `main.completion()` anthropic 分支就解析完毕（`litellm/main.py :: completion() :: anthropic 分支 :: +3100 行处附近`）：
+`AnthropicConfig` **不覆写** `get_complete_url`，用的是 `BaseConfig` 默认实现（`litellm/llms/base_llm/chat/transformation.py :: BaseConfig :: get_complete_url() :: +0`：api_base 为空抛 ValueError，否则原样返回）。URL 在更早的 `main.completion()` anthropic 分支就解析完毕（`litellm/main.py :: completion() :: anthropic 分支`）：
 
 - 默认 `https://api.anthropic.com/v1/messages`
 - env `ANTHROPIC_API_BASE` / `ANTHROPIC_BASE_URL` 可覆盖
@@ -102,7 +102,7 @@ litellm/llms/anthropic/common_utils.py :: AnthropicModelInfo :: validate_environ
 
 ## 7. BaseConfig 的公共契约
 
-所有 Config 的方法集由基类约定（`litellm/llms/base_llm/completion_transformation.py :: BaseConfig :: +0`）：
+所有 Config 的方法集由基类约定（`litellm/llms/base_llm/chat/transformation.py :: BaseConfig :: +0`）：
 
 | 方法 | 必须实现？ | 语义 |
 |---|---|---|

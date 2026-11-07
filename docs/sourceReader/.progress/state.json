@@ -1,0 +1,22 @@
+{
+  "library": "docs/sourceReader",
+  "baseline_commit": "3f4dc93b406ea1fad648f3ffd73b755ce0f3e1b5",
+  "baseline_subject": "feat(skills)!: add portable Agent Skills Hub API (#50159)",
+  "generated": "2026-11-07",
+  "refresh": {
+    "date": "2026-11-07",
+    "code_drift_since_baseline": 0,
+    "action": "notation-normalization+tooling",
+    "removed_snapshot_line_refs": 41,
+    "verified_symbol_spot_checks": 16
+  },
+  "layers": {
+    "1-skeleton": 4,
+    "2-walkthrough": 2,
+    "3-deep-dive": 8,
+    "4-function-reference": 9
+  },
+  "spec": ".progress/UPDATE-SPEC.md",
+  "tools": ".progress/sr_tools.py",
+  "verification": "VERIFY.md"
+}

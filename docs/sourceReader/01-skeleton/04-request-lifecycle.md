@@ -128,7 +128,7 @@ sequenceDiagram
 
 **设计点 1：鉴权发生在端点函数体之前。** `chat_completion()` 的路由装饰器上挂着 `dependencies=[Depends(user_api_key_auth)]`（`litellm/proxy/proxy_server.py :: chat_completion() :: -20` 处的装饰器链），所以 401/429 根本不会进入函数体。
 
-**设计点 2：`route_request()` 返回的不是结果，是协程。** `common_request_processing.py :: _process_llm_request() :: route_request()` 调用点上方注释写着 "Do not change this - it should be a constant time fetch - ALWAYS"。它按 `route_type` 查表拿到 `llm_router.acompletion` 等方法引用，真正的调度（重试、fallback）在随后 await 时才发生。
+**设计点 2：`route_request()` 返回的不是结果，是协程。** `common_request_processing.py :: _process_llm_request() :: +84` 处调用 `route_request`（定义在 `litellm/proxy/route_llm_request.py :: route_request() :: +0`），调用点上方注释写着 "Do not change this - it should be a constant time fetch - ALWAYS"。它按 `route_type` 查表拿到 `llm_router.acompletion` 等方法引用，真正的调度（重试、fallback）在随后 await 时才发生。
 
 **设计点 3：响应先回客户端，记账异步做。** 成本与 spend 写入通过 `asyncio.create_task`（`proxy_server.py :: chat_completion() :: 内部响应处理`）和批量写入器解耦，用户延迟不受记账影响；只有 `x-litellm-response-cost` 头会在响应里同步带上（值取自 `_hidden_params["response_cost"]`）。
 

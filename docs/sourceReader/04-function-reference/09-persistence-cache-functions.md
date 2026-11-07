@@ -5,7 +5,7 @@
 ## 1. `DBSpendUpdateWriter`
 
 ```
-litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: +0（656 行处）
+litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: +0
 ```
 
 | 项 | 内容 |
@@ -16,7 +16,7 @@ litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: +0（656 �
 ### `update_database()`
 
 ```
-litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: update_database() :: +0（682 行处）
+litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: update_database() :: +0
 ```
 
 | 项 | 内容 |
@@ -31,8 +31,8 @@ litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: update_data
 
 1. `+45`：`ProxyUpdateSpend.disable_spend_updates()` 为真（无 DB）→ 直接返回
 2. `+48`：`sk-` key 哈希化（`hash_token`），杜绝明文 key 进 DB/日志
-3. `+69` 至 `+94`：按五个维度（key/user/team/org/end-user）构造 spend 增量；`use_ledger` 时写时间窗账本键（`accounting_window_keys(hashed_token, team_id)`），`settle-once` 行（`_is_settle_once_cost_row`，193 行处）只结一次
-4. 明细行 payload 组装（`SpendLogsPayload`）：request id、model、tokens、cost、metadata（`_parse_spend_log_metadata`，398 行处，解析既有 metadata；`_is_billed_retry_attempt`，417 行处，判定重试是否已计费）
+3. `+69` 至 `+94`：按五个维度（key/user/team/org/end-user）构造 spend 增量；`use_ledger` 时写时间窗账本键（`accounting_window_keys(hashed_token, team_id)`），`settle-once` 行（`_is_settle_once_cost_row`）只结一次
+4. 明细行 payload 组装（`SpendLogsPayload`）：request id、model、tokens、cost、metadata（`_parse_spend_log_metadata` 解析既有 metadata；`_is_billed_retry_attempt` 判定重试是否已计费）
 5. 入队等待后台 flush 聚合提交
 
 ### 幂等与防御
@@ -47,7 +47,7 @@ litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: update_data
 ## 2. `Cache`（SDK 层 LLM 响应缓存）
 
 ```
-litellm/caching/caching.py :: Cache :: +0（117 行处）
+litellm/caching/caching.py :: Cache :: +0
 ```
 
 | 项 | 内容 |
@@ -59,7 +59,7 @@ litellm/caching/caching.py :: Cache :: +0（117 行处）
 ## 3. `DualCache`
 
 ```
-litellm/caching/dual_cache.py :: DualCache :: +0（70 行处）
+litellm/caching/dual_cache.py :: DualCache :: +0
 ```
 
 | 项 | 内容 |
@@ -73,7 +73,7 @@ litellm/caching/dual_cache.py :: DualCache :: +0（70 行处）
 ## 4. `LLMCachingHandler`
 
 ```
-litellm/caching/caching_handler.py :: LLMCachingHandler :: +0（270 行处）
+litellm/caching/caching_handler.py :: LLMCachingHandler :: +0
 ```
 
 | 项 | 职责 |
@@ -84,7 +84,7 @@ litellm/caching/caching_handler.py :: LLMCachingHandler :: +0（270 行处）
 ## 5. `UserApiKeyCache`（Proxy 的 key/限流缓存）
 
 ```
-litellm/proxy/common_utils/user_api_key_cache.py :: UserApiKeyCache :: +0（38 行处）
+litellm/proxy/common_utils/user_api_key_cache.py :: UserApiKeyCache :: +0
 ```
 
 | 项 | 内容 |

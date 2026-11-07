@@ -73,7 +73,7 @@ Gateway 是 `litellm/proxy/` 下的 FastAPI 应用，入口在 `litellm/proxy/pr
 仓库正在把部分核心逻辑下沉到 Rust：
 
 - `litellm-rust/`：独立 Cargo workspace（Rust 核心）
-- `litellm/router_rust/`：Router 的 Rust 实现分支，`litellm/router.py :: make_core()` 在构造时「选择一个 RouterCore」（Python 或 Rust）
+- `litellm/router_rust/`：Router 的 Rust 实现分支，`litellm/router_core.py :: make_core() :: +0` 在构造时为 Router「选择一个 RouterCore」（Python 或 Rust）
 - `litellm/rust_bridge/`：Python 与 Rust 的桥接层
 
 本套文档的主链路（chat completion 请求）当前仍走 Python 核心（`router_python_core.py`），Rust 分支只在骨架篇提及。

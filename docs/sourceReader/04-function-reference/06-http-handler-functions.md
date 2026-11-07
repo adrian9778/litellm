@@ -25,7 +25,7 @@ litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: completio
 5. `+206`：流式判断——`stream=True` 走 `make_sync_call`（`+1131`）拿流迭代器再包 `CustomStreamWrapper`
 6. `+238`：非流式 `_make_common_sync_call`（`+745`）发请求，随后 `provider_config.transform_response` 转换
 
-注意参数名的翻译（`map_openai_params`）不发生在 handler 里：chat 的 OpenAI 参数校验与映射在 `main.completion()` 内经 `litellm/utils.py :: get_optional_params() :: +0`（5505 行处，`main.py:6042` 一带调用）完成后才传入。
+注意参数名的翻译（`map_openai_params`）不发生在 handler 里：chat 的 OpenAI 参数校验与映射在 `main.completion()` 内经 `litellm/utils.py :: get_optional_params() :: +0`（`litellm/main.py :: completion()` 内调用）完成后才传入。
 
 ## 2. `async_completion()`
 
@@ -70,8 +70,8 @@ litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: _make_com
 ## 4. `make_sync_call()` / `make_async_call_stream_helper()`
 
 ```
-litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: make_sync_call() :: +0（1131 行处）
-litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: make_async_call_stream_helper() :: +0（1270 行处）
+litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: make_sync_call() :: +0
+litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: make_async_call_stream_helper() :: +0
 ```
 
 | 项 | 内容 |
@@ -83,7 +83,7 @@ litellm/llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler :: make_asyn
 ## 5. `transform_response()` 的职责边界（以 OpenAIGPTConfig 为参照）
 
 ```
-litellm/llms/openai/chat/gpt_transformation.py :: OpenAIGPTConfig :: transform_response() :: +0（831 行处）
+litellm/llms/openai/chat/gpt_transformation.py :: OpenAIGPTConfig :: transform_response() :: +0
 ```
 
 | 项 | 内容 |

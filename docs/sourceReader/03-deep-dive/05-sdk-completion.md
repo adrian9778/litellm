@@ -23,7 +23,7 @@ litellm/main.py :: acompletion() :: +0
 | 1 | model 是 list？拆成多部署循环 | docstring 与参数注释（`model_list` 参数） |
 | 2 | `router_obj` 检测：Router 内部调用会带 `litellm.router_obj`，此时直接透传，避免递归 | `acompletion() :: +0 附近的 router_obj 分支`（类 `LiteLLM` 定义段） |
 | 3 | 参数经 `_REQUEST_KWARGS_ADAPTER`（pydantic TypeAdapter）校验归一 | `acompletion() :: +254 附近` |
-| 4 | `get_llm_provider()` 解析 provider | `+249`（`main.py:887`） |
+| 4 | `get_llm_provider()` 解析 provider | `+249` |
 | 5 | 组装 `completion_kwargs`，处理 `fallbacks` | `+97`（fallbacks 取值）、`+261` |
 | 6 | mock 参数短路（`mock_response` 等） | `+271` 起 |
 | 7 | 执行：默认 `run_in_executor`（`+293`），有 fallbacks 时 `async_completion_with_fallbacks`（`+261`） |
@@ -63,7 +63,7 @@ LlmProviders.BEDROCK: (lambda model: ProviderConfigManager._get_bedrock_config(m
 ...
 ```
 
-需要 model 参数的 provider（bedrock、vertex、azure_ai…）按 model 细分到具体 Config 子类。`completion()` 内部用解析出的 provider 调它拿到 `provider_config`（`main.py :: completion() :: provider_config 赋值段，main.py:5936 一带`），供执行器做参数校验与翻译。
+需要 model 参数的 provider（bedrock、vertex、azure_ai…）按 model 细分到具体 Config 子类。`completion()` 内部用解析出的 provider 调它拿到 `provider_config`（`litellm/main.py :: completion() :: provider_config 赋值段`），供执行器做参数校验与翻译。
 
 ## 为什么异步入口跑在线程池
 

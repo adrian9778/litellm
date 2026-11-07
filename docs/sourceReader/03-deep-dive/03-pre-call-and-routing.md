@@ -41,7 +41,7 @@ litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: c
 | 8 | `proxy_logging_obj.pre_call_hook`（执行全部 pre-call 回调） | `+293` |
 | 9 | guardrail 之后的 message 刷新（PII 掩码可能改写 messages） | `+320` |
 
-步骤 8 是限流真正发生的地方：`PROXY_HOOKS` 注册的限流器实现了 `async_pre_call_hook`，在 Redis 上扣 TPM/RPM/并发计数，超出即抛 429（`litellm/proxy/hooks/parallel_request_limiter_v3.py :: PROXY_MaxParallelRequestsHandler_v3 :: async_pre_call_hook() :: +0`，4415 行处；注册见 `litellm/proxy/hooks/__init__.py :: +24`）。
+步骤 8 是限流真正发生的地方：`PROXY_HOOKS` 注册的限流器实现了 `async_pre_call_hook`，在 Redis 上扣 TPM/RPM/并发计数，超出即抛 429（`litellm/proxy/hooks/parallel_request_limiter_v3.py :: PROXY_MaxParallelRequestsHandler_v3 :: async_pre_call_hook() :: +0`；注册见 `litellm/proxy/hooks/__init__.py` 的导出表）。
 
 ## add_litellm_data_to_request 的安全设计
 

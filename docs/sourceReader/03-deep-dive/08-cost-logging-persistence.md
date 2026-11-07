@@ -26,7 +26,7 @@ litellm/litellm_core_utils/litellm_logging.py :: Logging :: +669
 ## 成本计算
 
 ```
-litellm/cost_calculator.py :: completion_cost() :: +0（1764 行处）
+litellm/cost_calculator.py :: completion_cost() :: +0
 ```
 
 输入：响应对象（含 usage）+ completion call 参数。流程：
@@ -46,7 +46,7 @@ litellm/cost_calculator.py :: completion_cost() :: +0（1764 行处）
 ## Proxy 侧记账回调
 
 ```
-litellm/proxy/hooks/proxy_track_cost_callback.py :: _ProxyDBLogger :: async_log_success_event() :: +0（417 行处）
+litellm/proxy/hooks/proxy_track_cost_callback.py :: _ProxyDBLogger :: async_log_success_event() :: +0
 ```
 
 这是 Gateway 注册的成本专用回调。两条通道：
@@ -67,7 +67,7 @@ async_log_success_event(kwargs, response_obj, ...)
 
 ```
 litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: +656
-litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: update_database() :: +0（682 行处）
+litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: update_database() :: +0
 ```
 
 为什么需要专门的写入器：每次 LLM 调用都要更新 5 个维度的花费（key、user、team、org、end-user），逐次写库会把 Postgres 打爆。写入器做三件事：
@@ -119,6 +119,6 @@ sequenceDiagram
 
 ## 失败请求的对称路径
 
-调用失败时 `failure_handler` 广播，`_ProxyDBLogger` 对应的失败处理（`proxy_track_cost_callback.py :: async_log_failure_event` 段）同样释放预算预留，按部分 usage 记账（流式中断场景）或记 0。
+调用失败时 `failure_handler` 广播，`_ProxyDBLogger` 对应的失败处理（`proxy_track_cost_callback.py :: _ProxyDBLogger :: async_post_call_failure_hook() :: +0`）同样释放预算预留，按部分 usage 记账（流式中断场景）或记 0。
 
 第三层到此完整覆盖了第二层场景的每一跳。第四层开始函数级精读。

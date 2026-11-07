@@ -88,7 +88,7 @@ curl -X POST http://localhost:4000/v1/chat/completions \
   }'
 ```
 
-（这段 curl 与端点函数的 docstring 里的示例一致，见 `litellm/proxy/proxy_server.py :: chat_completion() :: docstring`）
+（这段 curl 与端点函数 docstring 里的示例一致，见 `litellm/proxy/proxy_server.py :: chat_completion() :: +6` 起）
 
 ## 预期响应
 

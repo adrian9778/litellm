@@ -5,7 +5,7 @@
 ## 1. `Logging.__init__()`
 
 ```
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: __init__() :: +0（731 行处）
+litellm/litellm_core_utils/litellm_logging.py :: Logging :: __init__() :: +0
 ```
 
 | 项 | 内容 |
@@ -18,8 +18,8 @@ litellm/litellm_core_utils/litellm_logging.py :: Logging :: __init__() :: +0（7
 ## 2. `pre_call()` / `post_call()`
 
 ```
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: pre_call() :: +0（1631 行处）
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: post_call() :: +0（1844 行处）
+litellm/litellm_core_utils/litellm_logging.py :: Logging :: pre_call() :: +0
+litellm/litellm_core_utils/litellm_logging.py :: Logging :: post_call() :: +0
 ```
 
 | 函数 | 职责 |
@@ -30,8 +30,8 @@ litellm/litellm_core_utils/litellm_logging.py :: Logging :: post_call() :: +0（
 ## 3. `success_handler()` / `async_success_handler()`
 
 ```
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: success_handler() :: +0（3595 行处）
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: async_success_handler() :: +0（4109 行处）
+litellm/litellm_core_utils/litellm_logging.py :: Logging :: success_handler() :: +0
+litellm/litellm_core_utils/litellm_logging.py :: Logging :: async_success_handler() :: +0
 ```
 
 | 项 | 内容 |
@@ -53,7 +53,7 @@ litellm/litellm_core_utils/litellm_logging.py :: Logging :: async_success_handle
 ## 4. `response_cost_calculator()`
 
 ```
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: response_cost_calculator() :: +0（2093 行处）
+litellm/litellm_core_utils/litellm_logging.py :: Logging :: response_cost_calculator() :: +0
 ```
 
 | 项 | 内容 |
@@ -66,8 +66,8 @@ litellm/litellm_core_utils/litellm_logging.py :: Logging :: response_cost_calcul
 ## 5. `failure_handler()` / `async_failure_handler()`
 
 ```
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: failure_handler() :: +0（4621 行处）
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: async_failure_handler() :: +0（4826 行处）
+litellm/litellm_core_utils/litellm_logging.py :: Logging :: failure_handler() :: +0
+litellm/litellm_core_utils/litellm_logging.py :: Logging :: async_failure_handler() :: +0
 ```
 
 | 项 | 内容 |
@@ -79,7 +79,7 @@ litellm/litellm_core_utils/litellm_logging.py :: Logging :: async_failure_handle
 ## 6. `completion_cost()`
 
 ```
-litellm/cost_calculator.py :: completion_cost() :: +0（1764 行处）
+litellm/cost_calculator.py :: completion_cost() :: +0
 ```
 
 | 项 | 内容 |

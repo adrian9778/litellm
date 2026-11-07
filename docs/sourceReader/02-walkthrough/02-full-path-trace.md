@@ -245,7 +245,7 @@ litellm/proxy/db/db_spend_update_writer.py :: DBSpendUpdateWriter :: update_data
 1. 日志管线触发 `completion_cost()`：`usage.tokens × 价目表（model_prices_and_context_window.json 里 gpt-4o-mini 单价）` → `response_cost`，写进 `_hidden_params`
 2. 各回调 `async_log_success_event` 并行执行（Langfuse 上报、Prometheus 计数…）
 3. `_ProxyDBLogger` 把 spend 增量交给 `DBSpendUpdateWriter`，后者聚合后异步批量写 Postgres（本场景没配 DB，此步自动降级为仅内存计数）
-4. 响应头组装：`x-litellm-response-cost`、`x-litellm-call-id`、`x-litellm-model-id`（`common_request_processing.py :: _common_response_headers() :: +0 附近，字面量在 +0 之后可见`）
+4. 响应头组装：`x-litellm-response-cost`、`x-litellm-call-id`、`x-litellm-model-id`（`common_request_processing.py :: cost_headers() :: +0`，字面量在 `+14`）
 
 客户端拿到 JSON。全程状态变化复述一遍：metadata 被注入、call id 生成、deployment 被选中并记数、成本被算出、spend 被异步累加、响应头携带审计字段。
 

@@ -39,11 +39,11 @@ acompletion()
          └─ _host.invoke("acompletion")(...)         # 真调用（跳 8）
 ```
 
-锚点：`async_function_with_fallbacks :: +0`（`router_python_core.py:9577`）、`async_function_with_retries :: +0`（9717）、`_acompletion :: +0`（5004）。
+锚点：`router_python_core.py :: PythonCore :: async_function_with_fallbacks() :: +0`、`router_python_core.py :: PythonCore :: async_function_with_retries() :: +0`、`router_python_core.py :: PythonCore :: _acompletion() :: +0`。
 
 ## 选部署：过滤链
 
-`_core_async_get_healthy_deployments`（`router_python_core.py:15973`）按固定顺序过滤：
+`_core_async_get_healthy_deployments`（`router_python_core.py :: PythonCore :: _core_async_get_healthy_deployments() :: +0`）按固定顺序过滤：
 
 | 序 | 过滤器 | 作用 |
 |---|---|---|
@@ -74,7 +74,7 @@ litellm/router_utils/cooldown_handlers.py :: async_get_cooldown_deployments() ::
 litellm/router_utils/cooldown_handlers.py :: set_cooldown_deployments() :: +0
 ```
 
-写入时机：单次尝试失败后，`_acompletion` 的异常处理里 `set_cooldown_deployments`（`router_python_core.py:10481`、`10873` 两处调用）。是否进入冷却由 `allowed_fails`（允许连续失败次数）与 `cooldown_time`（秒）控制，可按 deployment 或全局配置。
+写入时机：单次尝试失败后，`_acompletion` 的异常处理里 `set_cooldown_deployments`（`router_python_core.py :: PythonCore :: _acompletion()` 异常路径两处调用）。是否进入冷却由 `allowed_fails`（允许连续失败次数）与 `cooldown_time`（秒）控制，可按 deployment 或全局配置。
 
 单次尝试伪代码（`_acompletion() :: +0 至 +100`）：
 
@@ -91,7 +91,7 @@ async with max_parallel_requests_limit:        # 并发闸门（若配置）
 
 ## 重试层
 
-`async_function_with_retries`（`router_python_core.py:9717`）：
+`async_function_with_retries`（`router_python_core.py :: PythonCore :: async_function_with_retries() :: +0`）：
 
 1. 取 `num_retries`：请求参数 > deployment 配置 > 全局配置 > 0（`_deployment_num_retries :: +0`）
 2. 循环调用 `original_function`（每次内部重新选部署，冷却会把坏部署自动排除）
@@ -100,7 +100,7 @@ async with max_parallel_requests_limit:        # 并发闸门（若配置）
 
 ## Fallback 层
 
-`async_function_with_fallbacks`（`router_python_core.py:9577`）：
+`async_function_with_fallbacks`（`router_python_core.py :: PythonCore :: async_function_with_fallbacks() :: +0`）：
 
 1. 记录 `attempted_fallbacks` 计数与 `original_model_group` 进 metadata
 2. 三类回退按序尝试（配置于 YAML 的 `router_settings.fallbacks` 等）：
