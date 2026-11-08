@@ -14,7 +14,7 @@
 | 一 | `01-skeleton/` | 项目是什么、由什么组成、请求怎么流转 | 4 |
 | 二 | `02-walkthrough/` | 一个真实请求从入口到响应走了哪条路 | 2 |
 | 三 | `03-deep-dive/` | 这条路上的每一跳具体发生了什么 | 8 |
-| 四 | `04-function-reference/` | 每个关键函数的职责、参数、返回值与算法 | 9 |
+| 四 | `04-function-reference/` | 每个关键函数的职责、参数、返回值与算法 | 12 |
 
 ## 目录索引
 
@@ -60,6 +60,9 @@
 | [07-provider-transform-functions.md](04-function-reference/07-provider-transform-functions.md) | 以 Anthropic Config 为例的变换函数 |
 | [08-logging-cost-functions.md](04-function-reference/08-logging-cost-functions.md) | `litellm_logging.py`、`cost_calculator.py` 关键函数 |
 | [09-persistence-cache-functions.md](04-function-reference/09-persistence-cache-functions.md) | 花费写入器、缓存层关键函数 |
+| [10-streaming-functions.md](04-function-reference/10-streaming-functions.md) | `CustomStreamWrapper` 流包装器关键方法 |
+| [11-rate-limiter-functions.md](04-function-reference/11-rate-limiter-functions.md) | `PROXY_MaxParallelRequestsHandler_v3` 限流函数 |
+| [12-startup-lifecycle-functions.md](04-function-reference/12-startup-lifecycle-functions.md) | `run_server`、lifespan 与后台任务 |
 
 ## 源码定位规范
 

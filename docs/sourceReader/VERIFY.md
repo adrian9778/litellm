@@ -7,7 +7,7 @@
 | 文档 | 抽核点（文档中的引用） | 实测 | 结论 |
 |---|---|---|---|
 | README.md | 目录文件名与各层篇目一致 | 逐条比对实际文件树 | 通过 |
-| 01-what-is-litellm.md | `main.py :: acompletion :: +0`（638 行）；`_version.py :: _installed_version :: +0`（6 行）；`dev_config.yaml` 含 gpt-4o-mini 条目；`gateway/main.py` docstring；`Router.from_config` 在 `_update_llm_router`（8092 行） | grep/sed 实测全部命中 | 通过 |
+| 01-skeleton/01-what-is-litellm.md | `main.py :: acompletion :: +0`（638 行）；`_version.py :: _installed_version :: +0`（6 行）；`dev_config.yaml` 含 gpt-4o-mini 条目；`gateway/main.py` docstring；`Router.from_config` 在 `_update_llm_router`（8092 行） | grep/sed 实测全部命中 | 通过 |
 | 02-repo-layout.md | `litellm/router.py` 212 行；`proxy_server.py` 2.3 万行；`litellm-proxy-extras` README 描述；`router_python_core.py` 1.8 万行 | `wc -l`/`ls` 实测 | 通过 |
 | 03-modules-and-dependencies.md | `llm_router` 全局（3116 行）；`user_api_key_cache`（3143）；`proxy_logging_obj`（3217）；`x-litellm-response-cost` 字面量（1921）；`make_core`（router_core.py 54 行） | grep 实测 | 通过 |
 | 04-request-lifecycle.md | 端点装饰器 `dependencies=[Depends(user_api_key_auth)]`（13102-13105）；`route_request` 调用注释 "constant time fetch"（3127）；`open_sse_before_first_byte`（1538） | sed 实测 | 通过 |
@@ -39,6 +39,15 @@
 4. **AnthropicConfig 的 URL 方法**：初稿假设 `get_complete_url` 在 chat/transformation.py 内实现，实测不覆写、用 `BaseConfig` 默认实现，URL 在 `main.completion()` 的 anthropic 分支解析。已修正
 5. **`common_processing_pre_call_logic` 返回顺序**：初稿写 `(logging_obj, data)`，实测返回 `self.data, logging_obj`（2712 行）。已修正
 
+## 2026-11-08 复检与补篇
+
+- **复检**：漂移仍为 0（`3f4dc93b40..HEAD` 无上游代码变更）；全库 `verify --symbols` 通过，修复 VERIFY.md 自身 5 处引用（篇目引用补全目录前缀、勘误记录中的旧路径补否定语境）
+- **补篇**（第四层 9 → 12 篇，补齐主链路触及但缺函数级解析的三个模块）：
+  1. `04-function-reference/10-streaming-functions.md`：`CustomStreamWrapper`（`__init__`/`chunk_creator`/`__anext__`/`_finalize_completed_stream` 等，偏移经 grep 实测换算）
+  2. `04-function-reference/11-rate-limiter-functions.md`：`PROXY_MaxParallelRequestsHandler_v3`（`async_pre_call_hook`、三个释放入口、PTU 估算、无 Redis 降级）
+  3. `04-function-reference/12-startup-lifecycle-functions.md`：`run_server` → `_proxy_lifespan` 启动序列（8 步实测）→ `ProxyStartupEvent` 13 个初始化方法 → APScheduler 任务族；`proxy_startup_event` 薄壳结构与 `_proxy_lifespan` 真实序列已回代码核对
+- 三篇新文档 `verify --symbols` 首跑即达标（exit=0）
+
 ## 偏移换算规则备忘
 
 文档统一 `+0` = 定义行本身，`+N` = 定义行向下第 N 行。文中形如「+0（NNNN 行处）」的括号行号是生成时快照，仅帮助定位，漂移以偏移语义为准。
@@ -48,9 +57,9 @@
 - **漂移审计**：基准 `3f4dc93b40` 与 HEAD 间上游代码 **0 commit**（仅本库自身提交），16 组核心「文件+符号」抽检全部命中，无需内容重写
 - **记法净化**：清除全部 41 处绝对行号残留（28 处 `（NNNN 行处）` 快照 + 13 处 `py:NNNN`/裸行号），全库改为纯「符号 + 偏移」定位；快照行号仅保留于本文件历史记录
 - **符号级校验纠错**（verify 之外另跑 `--symbols` 抓出，属「文件对、符号错」类硬伤）：
-  1. `02-full-path-trace.md` 的 `_common_response_headers()` 系臆造名，实际是 `common_request_processing.py :: cost_headers()`
-  2. `08-cost-logging-persistence.md` 的 `async_log_failure_event` 系臆造名，实际是 `_ProxyDBLogger :: async_post_call_failure_hook()`
-  3. `01-what-is-litellm.md` 把 `make_core()` 归到 `router.py`（实际定义在 `router_core.py`，router.py 只是调用方）
-  4. `07-provider-transform-functions.md` §7 的 BaseConfig 路径仍指旧文件 `base_llm/completion_transformation.py`，已改 `base_llm/chat/transformation.py`
+  1. `02-walkthrough/02-full-path-trace.md` 的 `_common_response_headers()` 系臆造名，实际是 `common_request_processing.py :: cost_headers()`
+  2. `03-deep-dive/08-cost-logging-persistence.md` 的 `async_log_failure_event` 系臆造名，实际是 `_ProxyDBLogger :: async_post_call_failure_hook()`
+  3. `01-skeleton/01-what-is-litellm.md` 把 `make_core()` 归到 `router.py`（实际定义在 `router_core.py`，router.py 只是调用方）
+  4. `04-function-reference/07-provider-transform-functions.md` §7 的 BaseConfig 路径曾误指不存在的旧文件 `base_llm/completion_transformation.py`，已改 `base_llm/chat/transformation.py`
 - **上游文档扫描（4b）**：全仓库 AGENTS.md + ARCHITECTURE.md 用同一工具体检，发现并修复 1 处真实路径失效（`tests/e2e/AGENTS.md` 的 fixture 路径，实际在 `tests/e2e/ui/fixtures/` 下）；其余命中均为占位名/尾段缩写等合法形态
 - **工具落地**：`.progress/sr_tools.py`（locate/outline/offset/verify --symbols，带缓存）、`.progress/UPDATE-SPEC.md`、`.progress/state.json`、`.progress/tasks.json`；全库与上游扫描 exit=0

@@ -14,8 +14,9 @@
     "1-skeleton": 4,
     "2-walkthrough": 2,
     "3-deep-dive": 8,
-    "4-function-reference": 9
+    "4-function-reference": 12
   },
+  "refresh_2026_11_08": "复检通过；VERIFY 5 处自引用修复；补第四层 10/11/12 三篇（流式/限流器/启动生命周期）",
   "spec": ".progress/UPDATE-SPEC.md",
   "tools": ".progress/sr_tools.py",
   "verification": "VERIFY.md"
