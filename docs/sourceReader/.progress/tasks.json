@@ -3,9 +3,10 @@
   "done": [
     {"id": "generate-4layer", "desc": "四层文档库首次生成（21 篇 + README），基线 3f4dc93b40", "date": "2026-11-07"},
     {"id": "verify-per-doc", "desc": "每篇 3~5 处引用回核，5 项事实修正，记录于 VERIFY.md", "date": "2026-11-07"},
-    {"id": "refresh-notation", "desc": "source-doc-refresh：零代码漂移确认；清除 41 处绝对行号残留；符号级校验纠 4 处硬伤（2 个臆造符号名、2 处文件归属）；补 sr_tools.py + UPDATE-SPEC.md + state/tasks", "date": "2026-11-07"},
-    {"id": "upstream-scan", "desc": "4b 上游扫描：全仓库 AGENTS.md + ARCHITECTURE.md 体检；修 1 处真实失效（tests/e2e/AGENTS.md fixture 路径）；工具补占位名/尾段缩写豁免与文件索引缓存", "date": "2026-11-07"},
-    {"id": "recheck-and-fill", "desc": "2026-11-08 复检：漂移 0；VERIFY 5 处自引用修复；补第四层 10 流式 / 11 限流器 / 12 启动生命周期三篇，verify --symbols 达标", "date": "2026-11-08"}
+    {"id": "refresh-notation", "desc": "source-doc-refresh：清除 41 处绝对行号残留；符号级校验纠 4 处硬伤；补 sr_tools + UPDATE-SPEC + state/tasks", "date": "2026-11-07"},
+    {"id": "upstream-scan", "desc": "4b 上游扫描：修 tests/e2e/AGENTS.md fixture 路径；工具补豁免档与缓存", "date": "2026-11-07"},
+    {"id": "recheck-and-fill", "desc": "2026-11-08 复检：漂移 0；补第四层 10/11/12 三篇；verify --symbols 达标", "date": "2026-11-08"},
+    {"id": "full-regenerate-2026-11-12", "desc": "全量重生成：rebase 上游 392 commit；7 篇 router 文档重写为 Rust 决策链；新增 13-rust-router-core；全部 26+1 篇重写并 verify --symbols 0 硬伤；修 sr_tools offset 空行偏移 bug；README/VERIFY/state/tasks 收尾", "date": "2026-11-12"}
   ],
-  "next_check": "git rev-list --count 3f4dc93b40..HEAD 超过 50 或出现模块拆分/搬家合并时重跑 source-doc-refresh"
+  "next_check": "git rev-list --count 0608a41a07..HEAD 超过 50 或出现模块拆分/搬家合并时重跑 source-doc-refresh"
 }

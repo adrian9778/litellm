@@ -21,8 +21,8 @@ PROD_ROOTS: tuple[str, ...] = ("litellm", "gateway", "backend", "enterprise", "l
 FALLBACK_ROOTS: tuple[str, ...] = ("tests", "scripts", "ci_cd", "db_scripts", "migrations", "ui/litellm-dashboard")
 SKIP_DIRS: frozenset[str] = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv", ".zcode", "dist", "build", ".mypy_cache", ".pytest_cache"})
 
-DEF_RE = re.compile(r"^\s*(?:class|def|async def)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
-ASGN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]+)?=", re.M)
+DEF_RE = re.compile(r"^[ \t]*(?:class|def|async def)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+ASGN_RE = re.compile(r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]+)?=", re.M)
 
 CITED_SPAN_RE = re.compile(r"`([^`\n]+)`")
 PATH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:tsx|py|yaml|yml|json|prisma|toml|md|sql|txt|pem))(?![A-Za-z0-9_./-])")
@@ -108,13 +108,17 @@ def cmd_offset(file: str, symbol: str) -> int:
         print(f"no such file: {path}", file=sys.stderr)
         return 1
     text = path.read_text(encoding="utf-8", errors="replace")
-    pattern = re.compile(rf"^\s*(?:class|def|async def)\s+{re.escape(symbol)}\b", re.M)
+    pattern = re.compile(rf"^[ \t]*(?:class|def|async def)\s+{re.escape(symbol)}\b", re.M)
     match = pattern.search(text)
     if match is None:
-        asgn = re.compile(rf"^\s*{re.escape(symbol)}\s*(?::[^=\n]+)?=", re.M).search(text)
-        if asgn is None:
+        asgn_matches = list(re.compile(rf"^[ \t]*{re.escape(symbol)}\s*(?::[^=\n]+)?=", re.M).finditer(text))
+        if not asgn_matches:
             print(f"NOT FOUND: {symbol} in {file}", file=sys.stderr)
             return 1
+        asgn = next(
+            (m for m in asgn_matches if re.search(r"[\w\)\]]\s=\s", text[m.start() : text.find("\n", m.start())])),
+            asgn_matches[0],
+        )
         print(text[: asgn.start()].count("\n") + 1)
         return 0
     print(text[: match.start()].count("\n") + 1)
@@ -139,6 +143,9 @@ def iter_known_files(roots: tuple[str, ...]) -> list[Path]:
     if cached is not None:
         return cached
     files: list[Path] = []
+    # docs/ holds the sourceReader library itself and its .progress/ tool files,
+    # so VERIFY.md cross-references to doc filenames and the tool resolve too.
+    roots = tuple([*roots, "docs"])
     for root in roots:
         base = REPO_ROOT / root
         if not base.is_dir():

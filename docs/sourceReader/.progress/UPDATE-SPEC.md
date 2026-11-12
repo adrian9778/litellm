@@ -2,12 +2,12 @@
 
 ## 基准
 
-- 文档基准提交：`3f4dc93b40`（2026-11-07 快照）。首次生成与 2026-11-07 规范化刷新均基于它，二者之间上游代码 **0 commit**
-- 当前 HEAD 与基准的漂移检测：
+- 文档基准提交：`0608a41a07`（upstream/main tip，2026-11-12 快照）。2026-11-12 已完成全量重生成：rebase 上游 392 commit，上一基线 `3f4dc93b40` 之上全部 26+1 篇重写，新增第 4 层 13-rust-router-core.md
+- 漂移检测：
   ```bash
-  git rev-list --count 3f4dc93b40..HEAD
+  git rev-list --count 0608a41a07..HEAD
   ```
-- 漂移 > 50 commit 或出现 god-file 拆分/模块搬家类合并时，按 skill 流程重估骨架；小漂移只修引用
+- 上游远端：`upstream` = https://github.com/berriai/litellm.git（本仓 origin 为 fork，main 钉在旧基线）
 
 ## 定位记法（库内统一约定）
 
@@ -16,54 +16,96 @@
 ```
 litellm/proxy/proxy_server.py :: chat_completion() :: +31
 litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: base_process_llm_request() :: +0
-litellm/llms/base_llm/chat/transformation.py :: BaseConfig :: get_complete_url() :: +0
+litellm/router_rust/core.py :: RustCore :: acompletion() :: +0
 ```
 
 - 顶层函数/类省略中间段；模块级常量直接写常量名
-- 库内使用 ` :: ` 分隔（skill 推荐的 ` · ` 是等价风格，**不要混用**，全库保持 ` :: `）
-- **禁止**：`@行号` 写法，以及「文件名后跟冒号行号」的写法作为定位主引用；快照行号只允许出现在 VERIFY.md 的历史核对记录里且必须标注「生成时快照」
+- 库内使用 ` :: ` 分隔，**不要混用**其他风格
+- **禁止**：`@行号` 写法与「文件名:行号」定位主引用；快照行号只允许出现在 VERIFY.md 历史区且标注「生成时快照」
 - 索引类表格只给「符号 → 文件」，不给行号
+- 两个文件路径并列时用 `、` 分隔，不要用 `·`（防符号抽取歧义）
 
 ## 工具链
 
 ```bash
-# 定位符号（两遍扫描：先 litellm/gateway/backend/enterprise/CLI 树，未命中再扫 tests/scripts）
+# 定位符号（两遍扫描：先生产树，未命中再扫 tests/scripts）
 python3 -I docs/sourceReader/.progress/sr_tools.py locate <SYM>...
-# 文件骨架（省 token 的侦查入口）
+# 文件骨架
 python3 -I docs/sourceReader/.progress/sr_tools.py outline <FILE> [--top N]
 # 取定义行号（换算函数内偏移用）
 python3 -I docs/sourceReader/.progress/sr_tools.py offset <FILE> <SYM>
-# 全库/单篇体检：@行号=0、疑似失效路径=0；--symbols 追加符号级校验
-python3 -I docs/sourceReader/.progress/sr_tools.py verify docs/sourceReader/*.md --symbols
+# 体检：@行号=0、疑似失效=0、符号级=0
+python3 -I docs/sourceReader/.progress/sr_tools.py verify docs/sourceReader/*.md docs/sourceReader/*/*.md --symbols
 ```
 
-- `verify` 的 ✗ 桶要逐条判读：说明性引用（"已删除"等否定语境）、运行期配置名（`my-config.yaml`）、示例占位名是豁免档，不是错误
-- `verify` 只查路径可解析性；`:: 引用` 的符号归属由 `--symbols` 查，偏移 `+N` 数值正确性仍需人工读代码
-- 改完文档必跑：`verify docs/sourceReader/*.md --symbols`，四个计数必须归零（分类豁免除外）
+- `verify` 只查路径可解析性与符号归属；偏移 `+N` 数值正确性必须人工/子代理回代码核对
+- **2026-11-12 修复记录**：`locate`/`offset` 原对「定义行前有空行」的符号少报 1-2 行（`^\s*` 跨行吞空行），已改 `^[ \t]*` 并在 `offset` 里优先取真赋值行（跳过同名 kwarg）。修复前算出的偏移一律作废重算
+- 写入前用 `grep -n` 对关键 def 行号交叉核对一次；模块级常量若与某 kwarg 同名，以 grep 为准
+- ✗ 桶逐条判读：否定语境引用、运行期配置名、示例占位名是豁免档
+- 改完必跑 verify，计数归零（豁免除外）
 
 ## 文档格式红线
 
-- 每篇头部保留「所属层级 | 阅读顺序/拆解对象」元信息行
+- 每篇头部保留「所属层级 | 阅读顺序/拆解对象」元信息行，覆盖清单按新架构改
 - 函数级文档结构固定：引用规范块、职责/参数/返回值/前置/后置/核心算法/错误处理表
-- 新增篇目必须同步进 README 目录索引；删除篇目必须清理 README 与其他文档的入链
-- Mermaid 图与 ASCII 流程改动时，重新核对每条边的「调用方 → 被调用方」真实存在
+- 每篇 ≥1 张图（ASCII 流程或 Mermaid），Mermaid 节点必须映射真实符号
+- 新增篇目同步进 README 目录索引；删除篇目清理入链
+- 正文中文，代码标识符保留原文；无占位词（TODO/待补充/同上）
 
-## 已确认的架构事实（防重复侦查，勘误记录）
+## 已确认的架构事实（2026-11-12 实测于 0608a41a07，可采信，推翻前先重测）
 
-以下结论在基准提交上实测过（详见 VERIFY.md），后续更新可直接采信，推翻前先重测：
+### 主链路（survey B 全部回核通过）
 
-1. **openai provider 默认走官方 SDK**（`litellm/llms/openai/openai.py :: OpenAIChatCompletion`），不走 `BaseLLMHTTPHandler`；后者仅在 `EXPERIMENTAL_OPENAI_BASE_LLM_HTTP_HANDLER` 开启时服务 openai，其余大多数 provider 默认走它
-2. **`main.acompletion` 把同步 `completion()` 丢进线程池**（`loop.run_in_executor`），除非显式传 `fallbacks`（此时走 `async_completion_with_fallbacks`）
-3. **限流器注册类是 `PROXY_MaxParallelRequestsHandler_v3`**（`parallel_request_limiter_v3.py`，`hooks/__init__.py` 导出），模块内另有同名 v1/v2 类勿混淆
-4. **Router 是薄门面**：`router.py`(212 行) → `make_core()` 选核心 → `router_python_core.py`(1.8 万行) 持有全部路由逻辑；核心不直接 import litellm，外部触达全走 `PythonHost.invoke()`
-5. **AnthropicConfig 不覆写 `get_complete_url`**，URL 在 `main.completion()` 的 anthropic 分支解析（默认 `https://api.anthropic.com/v1/messages` + `ensure_api_route` 补后缀）
-6. **`common_processing_pre_call_logic` 返回 `self.data, logging_obj`**（该顺序，非反序）
-7. **gateway/ 与 backend/ 是复用 `proxy_server.app` 的路由裁剪入口**（数据面/管理面分离），不是独立服务
-8. `ProxyException` 在 `litellm/proxy/_types.py`；`UserAPIKeyAuth` 在 `litellm/types/proxy/auth/user_api_key_auth.py`
+1. **openai provider 默认走官方 SDK**（`litellm/llms/openai/openai.py :: OpenAIChatCompletion`）；`BaseLLMHTTPHandler` 仅 `EXPERIMENTAL_OPENAI_BASE_LLM_HTTP_HANDLER`（main.py `use_base_llm_http_handler`，现 2853 行附近）开启时服务 openai，其余 provider 默认走它
+2. **`main.acompletion` 把同步 `completion()` 丢线程池**（`run_in_executor`，main.py 945），除非显式传 `fallbacks`
+3. **限流器注册类 `PROXY_MaxParallelRequestsHandler_v3`**（`parallel_request_limiter_v3.py`，模块内类名 `_PROXY_MaxParallelRequestsHandler_v3`，`hooks/__init__.py:25` 导出公开别名）
+4. **AnthropicConfig 不覆写 `get_complete_url`**（transformation.py 内 0 处定义），URL 在 `main.completion()` anthropic 分支解析
+5. **`common_processing_pre_call_logic` 返回 `self.data, logging_obj`**（common_request_processing.py 2893）
+6. **gateway/ 与 backend/ 是复用 `proxy_server.app` 的路由裁剪入口**，不是独立服务
+7. `ProxyException` 在 `litellm/proxy/_types.py`（3946 起）；`UserAPIKeyAuth` 在 `litellm/types/proxy/auth/user_api_key_auth.py`（132 起）
+8. **主链 12 跳入口符号全部未改名**：`proxy_server.py :: chat_completion`（13358 起）→ `common_request_processing.py :: ProxyBaseLLMRequestProcessing.base_process_llm_request`（3175 起）→ `auth/user_api_key_auth.py :: user_api_key_auth`（4565 起）→ `route_llm_request.py :: route_request`（832 起）→ `main.py :: acompletion`（652 起）→ `llms/custom_httpx/llm_http_handler.py :: BaseLLMHTTPHandler.async_completion`（820 起）
+
+### Rust 路由核心（本次最大架构变化，survey A 回核通过）
+
+9. **Router 是纯门面**（`router.py` 506 行）：`__init__` 仅 `attach(make_core(...))`，成员读写转发 `_core`；禁子类化，扩展走 `register_plugin` / `apply` / `observe`；端点名清单在 `router_rust/invoke/endpoints.py :: endpoint_names`（686 起）
+10. **`router_core.py :: make_core`（51 起，全文件 55 行）无条件 `RustCore.build`**。双核时代（`Route.ROUTER`、`PythonCore`、`router_python_core.py`）已被 #50178 终结
+11. **`router_rust/core.py :: RustCore`（1394 起）是 pyo3 句柄**（经 `rust_bridge/_native.pyi` 绑定 `litellm-rust/crates/router-core`），进程内拥有选路、重试、fallback、cooldown、用量；有状态 LB 与 pre-routing 留宿主 step（`router_rust/steps/` 下 selection、prerouting；`steps/prerouting.py :: as_output_cap`、`stamped_client_ceiling`）；provider 调用经 `router_python_host.py :: PythonHost`（58 起）`.invoke` 回 litellm 执行
+12. **执行层由 catalog 决定**：`chat_completions` 是 PYTHON_ONLY 执行；anthropic messages 是 RUST_REQUIRED（#51119），`litellm/messages/dispatch.py :: _rust_only_refusal`（189 起）抛 `UnsupportedParamsError`。两路由走同一个 Router
+13. **`LITELLM_RUST_FIRST`（`proxy/rust_forward/mode.py` SWITCH_ENV，17 起）独立于 `LITELLM_RUST`**：经 `rust_forward/supervisor` 起 Rust 网关占公网端口、Python 退 loopback（`RustPeerMiddleware` 还原客户端地址），起不来回退纯 Python；gunicorn 私有监听走 `proxy/server_listener.py :: PrivateListener`（#50871 `gunicorn_overrides`）。两者互不启用
+14. **`litellm/redis/` 新顶级包**：Rust 后端 store 家族（`stores/rate_limits :: RateLimitStore`、`stores/spend_counters`、`stores/auth_cache`、`store_settings :: RedisStoreSettings`），v3 限流器 / spend counters / 路由冷却与用量 / auth cache 已接入（#50169/#50170）
+
+### 行为变化清单（写给相关篇目）
+
+| 变化 | 出处 | 影响篇目 |
+|---|---|---|
+| 缺 role 消息改抛 `MissingMessageRoleError`（exceptions.py 372，BadRequestError 子类，HTTP 400），不再自动补 role（#51124 BREAKING）；校验在 `main.py :: validate_and_fix_openai_messages`（5668 起，签名加了 model/request_kwargs）+ `validate_chat_completion_user_messages`（utils.py 9496 附近） | B | 01-endpoint/02-full-path-trace/05-sdk/01-proxy-entry |
+| 请求体凭证字段清洗：`auth_utils.py` `_BANNED_REQUEST_BODY_PARAMS` 加 Azure Entra 字段，`_reject_secret_references` 拒 os.environ//oidc/ 前缀；api_base 重定向时 `clientside_credential_handler.py` 清管理员字段（#51254） | B | 02-auth-pipeline/02-auth-functions |
+| path 参数模型访问检查：`get_model_from_request` 新增 `_handler_selected_model`（Google/images 路由，#51226）；`proxy_server.py :: user_model_view` 新增 | B | 02-auth 篇 |
+| `token_counter` 端点回 `x-litellm-call-id`（#51037，`token_count_log.py :: answered_with_litellm_call_id` 143 起；常量 `LITELLM_CALL_ID_HEADER`） | B | 01-endpoint |
+| `total_timeout`（body 或头 `x-litellm-total-timeout`）非流式超时 408：`base_process_llm_request` 包 `_within_total_timeout`（`total_deadline.py`）；`route_llm_request.py :: enforce_total_timeout_scope` | B | 03-pre-call/01-proxy-entry/02-full-path-trace |
+| SSE keepalive 后 guardrail block 流式返回（#51114 `on_passthrough_block`）；`open_sse_before_first_byte` ttft keepalive 仍在 | B | 03-pre-call/07-streaming |
+| auth 预算按「服务所用模型」：`user_api_key_auth.py :: budget_served_model`（365 起）+ `litellm_pre_call_utils.py` served-model 助手族（#51058）；`_normalize_model_for_auth`（477 起，model_group_alias/Codex 解析）；`_should_skip_budget_checks` 改 **async**；auth prefetch `arm_routing_cooldowns` + `_spend_counter_store()` | B | 02-auth 两篇 |
+| pre-call 新增注入/读取：`without_credential_headers`、`resolve_tenant_otel_destinations`（#50728）、`get_tenant_logging_metadata`（#50135）、Claude Code subagent 会话头（x-claude-code-session-id/agent-id）、`x-litellm-total-timeout`、`x-litellm-priority` 读取 | B | 03-routing-functions/03-pre-call |
+| 显式免费费率 cost=0 落账：streaming `_stamp_usage_cost`（streaming_handler.py 114 起）+ `Logging.is_usage_explicitly_free`（#51093） | C | 07-streaming/10-streaming/08-logging-cost |
+| 429 头新增 `rate_limited_by: descriptor_key`（parallel_request_limiter_v3.py 3350，#51228）；per-customer per-model tpm/rpm（#50857 `RateLimitedModel`、`_end_user_model_rate_limit_descriptor`）；fallback 目标预检 `async_fallback_target_allowed`（#50994/#51082）；限流计数接 Rust store（#50170） | C | 11-rate-limiter |
+| spend 守卫：`DBSpendUpdateWriter.update_database` 对 free aget/acancel responses 不写创建行（#51110）；owner 限定读把空 key 行补回 `spend_log_api_key_scope.py :: _narrowing_keys`（#51127，该文件为基线后新增） | C | 08-cost-logging/09-persistence |
+| reasoning item id 稳定化在 `litellm/responses/`（streaming_iterator.py、utils.py `ResponsesAPIRequestUtils.affinity_*`）+ Rust `ids.rs`，**不在** CustomStreamWrapper（#51243） | C | 10-streaming（澄清归属） |
+| gunicorn 私有监听 `server_listener.py :: PrivateListener`（InheritedFd|AssignedPort）+ `run_gunicorn_server` 新参 `private_listener`（#50871）；启动先 `rust_forward/supervisor :: supervise`（#49606）；lifespan 与后台任务未动 | C | 12-startup |
+| OTel v2 目的地 metadata keys：全部在 `litellm/integrations/otel/`（baggage.py `parse_destination_metadata_keys` ≤20 键、destination.py `metadata_keys` 字段），litellm_logging.py 只加 4 个小方法 | C | 08-logging-cost |
+
+### 已消失符号与替代（写错即硬伤）
+
+| 旧引用 | 现状 |
+|---|---|
+| `router_python_core.py` 全文件（`PythonCore`、`as_output_cap`、`stamped_client_ceiling`、`model_info_is_active_for_environment`、双核 `make_core`、`Route.ROUTER`） | 已删除；替代：`router_rust/core.py :: RustCore`、`router_rust/steps/prerouting.py`（前两个函数）、`router_rust/surface/registry.py :: model_info_is_active_for_environment`、`router_core.py :: make_core` |
+| `proxy_server.py :: _swap_in_model_cost_map` | 删，改 `reload_result.model_count` |
+| `proxy/auth/_spend_counter_redis_cache` | 删，改 `_spend_counter_store()`（`redis/stores/spend_counters`） |
+| `_should_skip_budget_checks` | 仍在但改 async，调用处需 await |
+| `async_completion_handler` | 从不存在（BASE/tip 均无），正名 `async_completion`（llm_http_handler.py 820） |
 
 ## 更新流程（下次执行 source-doc-refresh 时）
 
-1. 第 0 步量化漂移（commit 数、`verify` 计数、核心符号抽检），产出漂移报告
+1. 第 0 步量化漂移（commit 数、verify 计数、核心符号抽检），产出漂移报告
 2. 让用户选深度（只修引用 / 骨架修补 / 全量重生成），不替用户决定
-3. 若架构级变化（模块拆分/搬家），先更新本文件「已确认事实」清单，再派活
+3. 架构级变化先更新本文件事实清单再派活
 4. 收尾四零标准：`@行号`=0、疑似失效=0、断链=0、孤儿=0；更新 state.json 与 tasks.json

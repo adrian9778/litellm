@@ -2,7 +2,7 @@
 
 一套面向新手的 LiteLLM 源码文档库：从系统骨架读到函数级实现，每一处结论都可以回到源码定位验证。
 
-- 基线：`main @ 3f4dc93b40`（2026-11 快照）。代码是唯一事实来源，若文档与代码冲突，以代码为准
+- 基线：`upstream/main @ 0608a41a07`（2026-11-12 快照，上游 392 commit 之上的全量重生成）。代码是唯一事实来源，若文档与代码冲突，以代码为准
 - 主 traced 场景：AI Gateway（Proxy）收到 `POST /v1/chat/completions`，路由到 OpenAI `gpt-4o-mini` 并返回
 
 ## 阅读路线
@@ -14,7 +14,7 @@
 | 一 | `01-skeleton/` | 项目是什么、由什么组成、请求怎么流转 | 4 |
 | 二 | `02-walkthrough/` | 一个真实请求从入口到响应走了哪条路 | 2 |
 | 三 | `03-deep-dive/` | 这条路上的每一跳具体发生了什么 | 8 |
-| 四 | `04-function-reference/` | 每个关键函数的职责、参数、返回值与算法 | 12 |
+| 四 | `04-function-reference/` | 每个关键函数的职责、参数、返回值与算法 | 13 |
 
 ## 目录索引
 
@@ -54,7 +54,7 @@
 | [01-proxy-entry-functions.md](04-function-reference/01-proxy-entry-functions.md) | `proxy_server.py` 端点函数与 `ProxyBaseLLMRequestProcessing` |
 | [02-auth-functions.md](04-function-reference/02-auth-functions.md) | `proxy/auth/user_api_key_auth.py` 等鉴权函数 |
 | [03-routing-functions.md](04-function-reference/03-routing-functions.md) | `route_llm_request.py`、`litellm_pre_call_utils.py` |
-| [04-router-functions.md](04-function-reference/04-router-functions.md) | `router_api.py`、`router_python_core.py` 关键函数 |
+| [04-router-functions.md](04-function-reference/04-router-functions.md) | Router 门面、`router_api.py` 视图面、`router_core.py::make_core` 关键函数 |
 | [05-acompletion-functions.md](04-function-reference/05-acompletion-functions.md) | `main.acompletion` 及其辅助函数 |
 | [06-http-handler-functions.md](04-function-reference/06-http-handler-functions.md) | `BaseLLMHTTPHandler` 关键方法 |
 | [07-provider-transform-functions.md](04-function-reference/07-provider-transform-functions.md) | 以 Anthropic Config 为例的变换函数 |
@@ -63,6 +63,7 @@
 | [10-streaming-functions.md](04-function-reference/10-streaming-functions.md) | `CustomStreamWrapper` 流包装器关键方法 |
 | [11-rate-limiter-functions.md](04-function-reference/11-rate-limiter-functions.md) | `PROXY_MaxParallelRequestsHandler_v3` 限流函数 |
 | [12-startup-lifecycle-functions.md](04-function-reference/12-startup-lifecycle-functions.md) | `run_server`、lifespan 与后台任务 |
+| [13-rust-router-core.md](04-function-reference/13-rust-router-core.md) | Rust 路由核心专题：`make_core`、`RustCore`、steps、`_Driver`、`PythonHost` 边界 |
 
 ## 源码定位规范
 

@@ -1,22 +1,23 @@
 {
   "library": "docs/sourceReader",
-  "baseline_commit": "3f4dc93b406ea1fad648f3ffd73b755ce0f3e1b5",
-  "baseline_subject": "feat(skills)!: add portable Agent Skills Hub API (#50159)",
-  "generated": "2026-11-07",
+  "baseline_commit": "0608a41a07",
+  "baseline_subject": "upstream/main @ 0608a41a07 (2026-11-12 snapshot; fork main was pinned at 3f4dc93b40)",
+  "generated": "2026-11-12",
   "refresh": {
-    "date": "2026-11-07",
+    "date": "2026-11-12",
+    "action": "full-regeneration on upstream latest",
     "code_drift_since_baseline": 0,
-    "action": "notation-normalization+tooling",
-    "removed_snapshot_line_refs": 41,
-    "verified_symbol_spot_checks": 16
+    "upstream_commits_rebased": 392,
+    "arch_change": "router_python_core.py deleted (Rust core); new litellm/redis + rust_forward + server_listener; added layer-4 doc 13",
+    "tool_fix": "sr_tools offset/locate off-by-N on blank-line-prefixed defs; anchored via grep cross-check"
   },
   "layers": {
     "1-skeleton": 4,
     "2-walkthrough": 2,
     "3-deep-dive": 8,
-    "4-function-reference": 12
+    "4-function-reference": 13
   },
-  "refresh_2026_11_08": "复检通过；VERIFY 5 处自引用修复；补第四层 10/11/12 三篇（流式/限流器/启动生命周期）",
+  "refresh_2026_11_12": "全量重生成：392 上游 commit rebase；7 篇 router 文档重写为 Rust 决策链；新增 13-rust-router-core；行为变化清单全写入；verify --symbols 全库 0 硬伤",
   "spec": ".progress/UPDATE-SPEC.md",
   "tools": ".progress/sr_tools.py",
   "verification": "VERIFY.md"

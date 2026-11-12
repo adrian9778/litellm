@@ -14,7 +14,7 @@
 | 流式 | 否（`stream` 不传） | 先看一次性响应，流式在第三层单独展开 |
 | 持久化 | 仅 master key，不配 DB | 最小启动。有 DB 时多出 spend 落库路径，文档会标注差异 |
 
-对应源码配置样例：仓库自带的 `litellm/proxy/dev_config.yaml` 里就有这一条目（`- model_name: gpt-4o-mini / litellm_params: model: openai/gpt-4o-mini`）。
+对应源码配置样例：仓库自带的 `litellm/proxy/dev_config.yaml` 里就有这一条目（`- model_name: gpt-4o-mini / litellm_params: model: openai/gpt-4o-mini`，见该文件 195 行起的 OpenAI 段）。
 
 ## 环境准备
 
@@ -51,6 +51,8 @@ general_settings:
 | `model_list[].litellm_params.api_key` | deployment 参数 | 上游调用的凭证 |
 | `general_settings.master_key` | 鉴权层 | 代理自身签发的根凭证 |
 
+`master_key` 的读取在 `litellm/proxy/proxy_server.py :: ProxyConfig :: 模块启动时 general_settings 解析`（`get_secret` 展开 `os.environ/` 前缀，`litellm/proxy/proxy_server.py` 7354 行起）。若省略，代理不会拒绝请求，而是把每个请求都当 `INTERNAL_USER` 处理（见下节警告）。
+
 ## 启动服务
 
 标准方式（CLI）：
@@ -65,7 +67,7 @@ litellm --config my-config.yaml --port 4000
 python litellm/proxy/proxy_cli.py --config my-config.yaml --port 4000 --detailed_debug
 ```
 
-两条命令最终都走到 `litellm/proxy/proxy_cli.py :: run_server() :: +0`，由 uvicorn 拉起 `litellm.proxy.proxy_server:app`。启动日志里能看到的两个关键事件：
+两条命令最终都走到 `litellm/proxy/proxy_cli.py :: run_server() :: +0`。默认路径（不设 `LITELLM_RUST_FIRST`）是纯 Python：`run_server` 在 `litellm/proxy/proxy_cli.py` 1383 行读 `rust_forward_mode(os.environ)`，未设开关时返回 `Mode.DISABLED`（`litellm/proxy/rust_forward/mode.py :: rust_forward_mode() :: +0`，`SWITCH_ENV = "LITELLM_RUST_FIRST"`），于是跳过 `supervise` 分支，直接走到 uvicorn 拉起 `litellm.proxy.proxy_server:app`（`run_server` 内 uvicorn 分支，1477 行起）。启动日志里能看到的两个关键事件：
 
 ```
 INFO: Uvicorn running on http://0.0.0.0:4000
@@ -74,7 +76,9 @@ INFO: Uvicorn running on http://0.0.0.0:4000
 # "LITELLM_MASTER_KEY is not set! All requests will be treated as INTERNAL_USER..."
 ```
 
-这条警告来自 `litellm/proxy/proxy_server.py :: 模块级 startup 逻辑 :: master_key 检查`。
+这条警告来自 `litellm/proxy/proxy_server.py :: ProxyConfig :: 模块启动时 master_key 检查`（`verbose_proxy_logger.critical`，7362 行）。
+
+**可选：Rust 网关前置（`LITELLM_RUST_FIRST`）**。默认路径之上，代理还支持一种「Rust 网关占公网端口、Python 退 loopback」的前置模式，开关是环境变量 `LITELLM_RUST_FIRST`，与 `LITELLM_RUST`（只决定 SDK 内 Rust 路径）相互独立。开启后 `run_server` 经 `litellm/proxy/rust_forward/supervisor :: supervise` 起 Rust 网关占公网端口、Python 子进程监听私有 loopback 监听器（`litellm/proxy/server_listener.py :: PrivateListener`，`AssignedPort` 或 `InheritedFd` 联合类型），`RustPeerMiddleware` 还原客户端地址。起不来时回退纯 Python。本场景不设此开关，走纯 Python 主链路；Rust 前置的细节在第三层启动篇展开。
 
 ## 发起请求
 
@@ -88,7 +92,7 @@ curl -X POST http://localhost:4000/v1/chat/completions \
   }'
 ```
 
-（这段 curl 与端点函数 docstring 里的示例一致，见 `litellm/proxy/proxy_server.py :: chat_completion() :: +6` 起）
+这段 curl 与端点函数 docstring 里的示例一致，见 `litellm/proxy/proxy_server.py :: chat_completion() :: +0` 起的 docstring（13364 行起）。注意 role 必须给全：缺 `role` 的消息现在抛 `MissingMessageRoleError`（HTTP 400），不再自动补 `role`，见 `litellm/utils.py :: validate_and_fix_openai_messages() :: +0`（9496 行起）与 `litellm/utils.py :: validate_chat_completion_user_messages() :: +0`（9573 行起）。
 
 ## 预期响应
 
@@ -113,7 +117,7 @@ curl -X POST http://localhost:4000/v1/chat/completions \
 }
 ```
 
-响应头里值得注意的代理附加字段：
+响应头里值得注意的代理附加字段（由 `litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: get_custom_headers() :: +0`，2419 行起组装）：
 
 ```
 x-litellm-response-cost: 0.0000165        ← 这次调用算出的美元成本
@@ -121,14 +125,18 @@ x-litellm-call-id: ...                    ← 本次调用在日志/审计里的
 x-litellm-model-id: <deployment 唯一 id>  ← 命中的具体部署
 ```
 
+`x-litellm-model-id`、`x-litellm-call-id` 的字面量在 `get_custom_headers` 的 headers 字典里（`"x-litellm-call-id"`、`"x-litellm-model-id"`、`"x-litellm-model-name"`，2464 行起），成本类头由 `cost_headers()` 展开（2096 行起）。
+
 失败时的典型响应（对照后面几层的错误传播分析）：
 
 | 现象 | HTTP 状态 | 根因 |
 |---|---|---|
 | 忘带 `Authorization` | 401 | 鉴权层拒绝 |
 | `model` 名不在 `model_list` | 400 | 路由层找不到 group |
+| `messages` 里某条缺 `role` | 400 | 消息校验层抛 `MissingMessageRoleError`（#51124 BREAKING） |
 | `OPENAI_API_KEY` 无效 | 401 | 上游错误被异常映射层翻译 |
 | 全部 deployment 冷却中 | 429 | Router 无健康部署 |
+| 超时（`total_timeout` 或 `x-litellm-total-timeout` 头，非流式） | 408 | `total_timeout` 超时被拦截（见 02-full-path-trace 跳 7 与 8） |
 
 ## 本场景覆盖与不覆盖的路径
 

@@ -1,52 +1,53 @@
 # 引用核对清单
 
-生成基线 `main @ 3f4dc93b40`。每篇文档抽样 3~5 处源码引用回代码核对，全部通过后才收录。核对方式：以文档中的「文件 + 类/函数 + 偏移」换算回绝对行号，与 `grep`/`sed` 实测对照。
+生成基线 `upstream/main @ 0608a41a07`（2026-11-12 全量重生成）。每篇文档抽样 3~5 处源码引用回代码核对，全部通过后才收录。核对方式：以文档中的「文件 + 类/函数 + 偏移」换算回绝对行号，与 `grep`/`sed`/`sr_tools offset` 实测对照。
 
 ## 每篇的核对记录
 
 | 文档 | 抽核点（文档中的引用） | 实测 | 结论 |
 |---|---|---|---|
-| README.md | 目录文件名与各层篇目一致 | 逐条比对实际文件树 | 通过 |
-| 01-skeleton/01-what-is-litellm.md | `main.py :: acompletion :: +0`（638 行）；`_version.py :: _installed_version :: +0`（6 行）；`dev_config.yaml` 含 gpt-4o-mini 条目；`gateway/main.py` docstring；`Router.from_config` 在 `_update_llm_router`（8092 行） | grep/sed 实测全部命中 | 通过 |
-| 02-repo-layout.md | `litellm/router.py` 212 行；`proxy_server.py` 2.3 万行；`litellm-proxy-extras` README 描述；`router_python_core.py` 1.8 万行 | `wc -l`/`ls` 实测 | 通过 |
-| 03-modules-and-dependencies.md | `llm_router` 全局（3116 行）；`user_api_key_cache`（3143）；`proxy_logging_obj`（3217）；`x-litellm-response-cost` 字面量（1921）；`make_core`（router_core.py 54 行） | grep 实测 | 通过 |
-| 04-request-lifecycle.md | 端点装饰器 `dependencies=[Depends(user_api_key_auth)]`（13102-13105）；`route_request` 调用注释 "constant time fetch"（3127）；`open_sse_before_first_byte`（1538） | sed 实测 | 通过 |
-| 02-walkthrough/01 | dev_config.yaml 的 model_list/master_key 结构；`run_server`（proxy_cli.py 1228）；master key 警告文案（proxy_server.py 7294） | cat/grep 实测 | 通过 |
-| 02-walkthrough/02 | `read_request_body`（http_parsing_utils.py 252）；头 `x-litellm-call-id`/`model-id`（2280-2281）；`simple_shuffle`（strategy 43）；`async_function_with_retries`（9717）；`OpenAIChatCompletion`（llms/openai/openai.py 405）；`use_base_llm_http_handler` 仅实验开关（2839） | grep 实测；openai 走 SDK 路径的错误 initially 已在文中修正 | 通过 |
-| 03-deep-dive/01 | `read_request_body` 分支树（252 起）；`ProxyException`（_types.py 3874）；构造器字段（2196 起）；metadata 归一注释（13156） | sed 实测 | 通过 |
-| 03-deep-dive/02 | `user_api_key_auth`（4344）；`user_api_key_auth_builder`（2189）；`secrets.compare_digest`（2810）；`validate_resolved_virtual_key`（2947）；`UserAPIKeyAuth`（types/proxy/auth 129）；检查序列注释（2996 起） | grep/sed 实测 | 通过 |
-| 03-deep-dive/03 | pre-call 九步锚点（2503/2560/2572/2585/2631/2641/2673/2700 换算偏移）；`route_request`（747）；`_route_request_single_attempt` 分支（820-1046）；mock 门禁（481） | grep 实测并修正 3 处偏移 | 通过 |
-| 03-deep-dive/04 | `PythonCore.acompletion` 实现（3782）；`_acompletion`（5004）；healthy 过滤链（15973 起）；`simple_shuffle` 调用（16421）；`set_cooldown_deployments`（10481/10873） | grep 实测 | 通过 |
-| 03-deep-dive/05 | `acompletion`（638）；`get_llm_provider` 调用（887）；`fallbacks` 取值（735）；`run_in_executor`（931）；`ProviderConfigManager`（utils.py 9773） | grep 实测 | 通过 |
-| 03-deep-dive/06 | `OpenAIChatCompletion.completion`（706）；SDK `chat.completions.create` 注释（549/605）；`BaseLLMHTTPHandler.completion`（868）；`async_completion`（795）；`transform_request`（handler 1041） | grep 实测 | 通过 |
-| 03-deep-dive/07 | `CustomStreamWrapper`（397）；`check_send_stream_usage`（656，偏移 +259）；`chunk_creator`（1786，偏移 +1389）；`_UpstreamClosingStreamingResponse`（1103）；`_dispatch_disconnect_billing_event`（559） | grep 实测并修正 2 处偏移 | 通过 |
-| 03-deep-dive/08 | `Logging`（669）；`success_handler`（3595）；`async_success_handler`（4109）；`completion_cost`（1764）；`DBSpendUpdateWriter.update_database`（682）；`_ProxyDBLogger.async_log_success_event`（417） | grep 实测 | 通过 |
-| 04-function-reference/01 | `chat_completion`（13123）内部偏移（+31/+32-45/+50/+51/+73）；`base_process_llm_request`（2976）；`_process_llm_request`（3044）route_request 调用（3128，+84）；`common_processing_pre_call_logic` 返回（2712）；`open_sse_before_first_byte`（1538）；解析缓存在 `request.scope["parsed_body"]`（http_parsing_utils 414） | sed/grep 实测并修正 3 处 | 通过 |
-| 04-function-reference/02 | builder 内部（2199/2217/2228/2699/2810/2876/2878 换算偏移）；`validate_resolved_virtual_key` 检查序（2996/3061/3090）；预算函数族（468/497/519/563/581）；`handle_authentication_error`（auth_exception_handler 141） | grep 实测并修正 4 处 | 通过 |
-| 04-function-reference/03 | `_route_request_single_attempt` 体（800/802/804/806/815/820/824 换算偏移）；`ProxyModelNotFoundError`（226）；`add_litellm_data_to_request`（2611）注入序（2664 等） | grep 实测并修正 3 处 | 通过 |
-| 04-function-reference/04 | 门面委托（router_api 1548）；`_acompletion` 内部（5105/5110/5114/5131/5134 换算偏移）；选择函数（16313/16336/2704）；`_deployment_num_retries`（982） | grep 实测并修正 1 处 | 通过 |
-| 04-function-reference/05 | acompletion 步骤（735/887/899/909/931）；`_resolve_dispatched_chat_response`（1004）；`_model_response_from_cached_dict`（1010）；`function_setup` 签名与返回类型（utils.py 1261）；`async_completion_with_fallbacks`（fallback_utils 17） | grep/sed 实测并修正 2 处 | 通过 |
-| 04-function-reference/06 | handler 内部（890/905/918/927/1040/1074/1106 换算偏移）；`get_optional_params`（utils.py 5505）；`make_sync_call`（1131）；`make_async_call_stream_helper`（1270）；`OpenAIGPTConfig.transform_response`（831） | grep 实测并修正 4 处 | 通过 |
-| 04-function-reference/07 | `AnthropicConfig`（543）；`get_supported_openai_params`（829）列表与动态追加；`transform_request` 内部（2423/2436/2439/2505/2524/2546 换算偏移）；`transform_response`（3298）；`validate_environment`（common_utils 1549）；`BaseConfig`（base_llm/chat 91）；`get_complete_url` 默认实现（base_llm/chat 350）；URL 解析（main.py 3095-3106）；`anthropic_messages_pt`（factory 2976） | grep/sed/ast 实测并修正 6 处 | 通过 |
-| 04-function-reference/08 | `Logging.__init__`（731）；`response_cost_calculator`（2093）与调用（2234/2296/2453）；`async_success_handler` 主体序（batch 短路/helper/0 成本/算钱，相对偏移实测）；`failure_handler`（4621/4826）；`completion_cost`（1764） | grep/sed 实测并修正 1 处 | 通过 |
-| 04-function-reference/09 | `DBSpendUpdateWriter`（656）/`update_database`（682）内部（727/730/751/776 换算偏移）；防御函数（193/214/398/417）；`Cache`（caching.py 117）；`DualCache`（70）方法（140/208/251/517/1140）；`LLMCachingHandler`（270）；`UserApiKeyCache`（user_api_key_cache.py 38） | grep/sed 实测并修正 3 处 | 通过 |
+| README.md | 目录文件名与各层篇目一致（第四层现 13 篇） | 逐条比对实际文件树 | 通过 |
+| 01-skeleton/01-what-is-litellm.md | `main.py :: acompletion :: +0`（652 行）；`router_core.py :: make_core :: +0`（51 行）；`messages/dispatch.py :: _rust_only_refusal :: +0`（189 行）；版本 1.110.0 | grep/sed 实测 | 通过 |
+| 02-repo-layout.md | `litellm/router.py` 506 行；`proxy_server.py` 23099 行；新增 `router_rust/`、`rust_bridge/`、`redis/`、`rust_forward/`、根级 `litellm-rust/`；已删除的 `router_python_core.py`（不存在） | `wc -l`/`ls`/`git ls-tree` 实测 | 通过 |
+| 03-modules-and-dependencies.md | 全局单例 `llm_router`（3173）、`user_api_key_cache`（3205）、`proxy_logging_obj`（3288）；`_within_total_timeout`（3280）；`router_core.py :: make_core`（51）；`RedisStoreSettings`（store_settings.py 20） | grep 实测 | 通过 |
+| 04-request-lifecycle.md | 端点装饰器 `dependencies=[Depends(user_api_key_auth)]`；`_process_llm_request`（3302）route_request 调用（3388，+86）；`MissingMessageRoleError`（exceptions.py 372）；`LITELLM_CALL_ID_HEADER`（19）；`resolve_litellm_call_id`（387） | sed 实测并修正 6 处偏移 | 通过 |
+| 02-walkthrough/01 | `rust_forward_mode`（mode.py 47）；默认路径纯 Python uvicorn；master key 警告（proxy_server.py 7354/7362）；run_server（proxy_cli.py 1298） | cat/grep 实测 | 通过 |
+| 02-walkthrough/02 | `chat_completion`（13358）；`user_api_key_auth`（4565）；`base_process_llm_request`（3175）；`route_request`（832）；`make_core`（51）→`RustCore.build`（1519）→`RustEndpoints.acompletion`（1998）→`PythonHost.invoke`（107）；`get_custom_headers`（2419）/`cost_headers`（2096） | grep 实测，已删除的旧 `router_python_core.py` 引用全部重写 | 通过 |
+| 03-deep-dive/01 | `chat_completion` metadata 注入（13391~13405，+33~+47）；`MissingMessageRoleError`（exceptions.py 372）；`answered_with_litellm_call_id`（token_count_log.py 143）；`open_sse_before_first_byte`（1719） | sed 实测并修正偏移 | 通过 |
+| 03-deep-dive/02 | `user_api_key_auth`（4565）；`_should_skip_budget_checks`（4282，async）；`budget_served_model`（365）；`_normalize_model_for_auth`（477）；`_spend_counter_store`（4479）；`_BANNED_REQUEST_BODY_PARAMS`（auth_utils.py 498）；`get_model_from_request`（2762）`_handler_selected_model`（2833） | grep/sed 实测 | 通过 |
+| 03-deep-dive/03 | pre-call 九步锚点；`add_litellm_data_to_request`；served-model 助手族（#51058）；`route_request`（832）；`enforce_total_timeout_scope`（162） | grep 实测 | 通过 |
+| 03-deep-dive/04 | `router.py :: Router.__init__`（418）只 attach；`make_core`（51）无条件 `RustCore.build`（1519）；`RustCore`（1394）`_drive`（2880）`_run_steps`（2930）；`_Driver.attempt`（5214）`_routed_attempt`（5238）`select`（5380）`pre_route`（5401）；`StrategySelectors`（97）`pick_async`（261）；`PythonHost.invoke`（107）；`RouterCooldownsHandle`（router_cooldowns/handle.py 11） | grep 实测，旧 `router_python_core.py` 已不存在，引用全部重写 | 通过 |
+| 03-deep-dive/05 | `acompletion`（652）；`run_in_executor`（945）；`get_llm_provider`（get_llm_provider_logic.py 187）；`validate_and_fix_openai_messages`（utils.py 9496）；缺 role 400 | grep 实测 | 通过 |
+| 03-deep-dive/06 | `OpenAIChatCompletion`（openai.py，SDK 路径）；`BaseLLMHTTPHandler.async_completion`（820）；`use_base_llm_http_handler`（main.py 2853）；`transform_request`/`transform_response` | grep 实测 | 通过 |
+| 03-deep-dive/07 | `CustomStreamWrapper`（457）；`chunk_creator`（1867）；`_stamp_usage_cost`（115，#51093）；`ResponsesAPIRequestUtils.affinity_*`（responses/utils.py）；#51243 归属 | grep 实测 | 通过 |
+| 03-deep-dive/08 | `Logging`（731）；`async_success_handler`（+3522 壳）`_async_success_handler_body`（+3540）；`completion_cost`（cost_calculator.py 1779）；`DBSpendUpdateWriter.update_database`（742）+ #51110；`_narrowing_keys`（spend_log_api_key_scope.py）；OTel metadata keys 归位 | grep/sed 实测 | 通过 |
+| 04-function-reference/01 | `chat_completion`（13358）偏移；`base_process_llm_request`（3175）；`_process_llm_request`（3302，+86 route_request）；`_within_total_timeout`（3280）；`get_custom_headers`（2419）；`cost_headers`（2096） | grep 实测 | 通过 |
+| 04-function-reference/02 | `user_api_key_auth_builder`（2329）检查序；`budget_served_model`（365）；`_normalize_model_for_auth`（477）；`_should_skip_budget_checks`（4282 async）；`_spend_counter_store`（4479） | grep 实测并修正 4 处 | 通过 |
+| 04-function-reference/03 | `route_request`（832）；`_route_request_single_attempt`；`enforce_total_timeout_scope`（162）；`add_litellm_data_to_request` 注入序；served-model 助手族 | grep 实测 | 通过 |
+| 04-function-reference/04 | `Router`（410）/`__init__`（418）门面；`RouterCore` Protocol；`make_core`（51）无条件 `RustCore.build`；`RustEndpoints.acompletion`（1998）；`RouterRegistry`（581）视图面 | grep 实测，旧 PythonCore 引用重写 | 通过 |
+| 04-function-reference/05 | `acompletion`（652）；fallbacks 取值；`run_in_executor`（945）；`async_completion_with_fallbacks`（fallback_utils 17）；缺 role 400（#51124） | grep 实测 | 通过 |
+| 04-function-reference/06 | `BaseLLMHTTPHandler.async_completion`（820）；内部链重测；openai 默认走 SDK | grep 实测 | 通过 |
+| 04-function-reference/07 | `AnthropicConfig`（648）；`get_supported_openai_params`（934）；`map_openai_params`（2026）；`transform_request`（2503）`transform_response`（3406）；`validate_environment`（common_utils 1575）；`anthropic_messages_pt`（factory 3015）；不覆写 `get_complete_url` | grep/sed 实测 | 通过 |
+| 04-function-reference/08 | `Logging`（731）；`async_success_handler`（+3522 壳）`_async_success_handler_body`（+3540）；`response_cost_calculator`（+1442）；`completion_cost`（1779）；四新方法；OTel 归位 | grep/sed 实测并修正偏移 | 通过 |
+| 04-function-reference/09 | `DBSpendUpdateWriter`（711）`update_database`（742）+ #51110；`_narrowing_keys`；`Cache`（128）`DualCache`（70）`LLMCachingHandler`（374）`UserApiKeyCache`（50）；Redis store 家族 | grep/sed 实测 | 通过 |
+| 04-function-reference/10 | `CustomStreamWrapper`（457）；方法偏移全重测；`_dispatch_disconnect_billing_event`/`_UpstreamClosingStreamingResponse`/`_late_block_or_failure`/`open_sse_before_first_byte` 归位 `common_request_processing.py`；#51243 归属 | grep 实测 | 通过 |
+| 04-function-reference/11 | `_PROXY_MaxParallelRequestsHandler_v3`（709）；`rate_limited_by` 头（3350，#51228）；`RateLimitedModel`（158）；`RateLimitStore`（rate_limits/__init__.py 67，#50170） | grep 实测 | 通过 |
+| 04-function-reference/12 | `run_server`（1298）分支重测；`server_listener.py :: PrivateListener`（22）；`rust_forward_mode`（47）；`supervise`（supervisor 22）；`_proxy_lifespan` 序列；`ProxyStartupEvent`（11249） | grep 实测 | 通过 |
+| 04-function-reference/13（新） | `make_core`（51）；`RustCore`（1394）`_drive`（2880）`_run_steps`（2930）；`StrategySelectors`（97）`as_output_cap`（627）`stamped_client_ceiling`（639）；`RustRetries`（retries.py 235）`RustFallbacks`（fallbacks.py 115）；`resolved_retry_policy`（24）；`PythonHost.invoke`（107）；`catalog.py :: RouteRule`（108） | grep 实测 | 通过 |
 
-## 已知修正（生成过程中发现并当场改正的事实错误）
+## 2026-11-12 全量重生成（本次）
 
-1. **openai provider 的执行器**：初稿写 openai 也走 `BaseLLMHTTPHandler`，实测默认走 `OpenAIChatCompletion`（官方 SDK），httpx handler 仅在 `EXPERIMENTAL_OPENAI_BASE_LLM_HTTP_HANDLER` 开启时服务 openai。已修正第 2 层与第 1 层对应文档
-2. **限流器类名**：初稿写 `ParallelRequestLimiterV3`，实际注册类是 `PROXY_MaxParallelRequestsHandler_v3`（hooks/__init__.py:24 导出）。已修正
-3. **acompletion 执行方式**：初稿按惯例写成直接调 async handler，实测是把同步 `completion()` 丢进线程池（`run_in_executor`）。已如实记录
-4. **AnthropicConfig 的 URL 方法**：初稿假设 `get_complete_url` 在 chat/transformation.py 内实现，实测不覆写、用 `BaseConfig` 默认实现，URL 在 `main.completion()` 的 anthropic 分支解析。已修正
-5. **`common_processing_pre_call_logic` 返回顺序**：初稿写 `(logging_obj, data)`，实测返回 `self.data, logging_obj`（2712 行）。已修正
+- **基线更新**：`3f4dc93b40`（2026-11-04）→ `upstream/main @ 0608a41a07`（2026-11-12），上游 392 commit、`litellm/` 下 907 文件
+- **架构级变化重写**：`router_python_core.py`（1.8 万行 PythonCore）被 #50178 移除（已删除），Rust 核心接管（`router_rust/`、`rust_bridge/`、`litellm-rust/` crate）。波及 7 篇引用该文件的文档，全部重写为 Rust 决策链语义（门面 `Router` → `make_core` → `RustCore` → steps → `PythonHost.invoke`）
+- **新增第 4 层第 13 篇** `13-rust-router-core.md`（Rust 路由核心专题）
+- **新增/迁移子包写入**：`litellm/redis/` store 家族（限流/冷却/用量/auth cache）、`litellm/proxy/rust_forward/`（LITELLM_RUST_FIRST 监督）、`server_listener.py`（gunicorn 私有监听）、`gateway/launch.py`、`litellm_cli.main:proxy_worker_app`
+- **工具修复**：`sr_tools.py` 的 `offset`/`locate` 对「定义行前有空行」的符号少报 1-2 行（`^\s*` 跨行吞空行），改 `^[ \t]*`；`offset` 优先取真赋值行（跳过同名 kwarg）。修复后用 offset + `grep -n` 全库重测，修正多处偏移/快照行号
+- **行为变化写实**：#51124 缺 role 400、#51093 显式免费 cost=0、#51228 `rate_limited_by` 头、#51114 SSE keepalive guardrail block、#51254 凭证清洗、#51226 path 模型访问、#50857 per-customer per-model 限流、#51110/#51127 spend 守卫、#50871/#49606 启动路径
 
 ## 2026-11-08 复检与补篇
 
-- **复检**：漂移仍为 0（`3f4dc93b40..HEAD` 无上游代码变更）；全库 `verify --symbols` 通过，修复 VERIFY.md 自身 5 处引用（篇目引用补全目录前缀、勘误记录中的旧路径补否定语境）
-- **补篇**（第四层 9 → 12 篇，补齐主链路触及但缺函数级解析的三个模块）：
-  1. `04-function-reference/10-streaming-functions.md`：`CustomStreamWrapper`（`__init__`/`chunk_creator`/`__anext__`/`_finalize_completed_stream` 等，偏移经 grep 实测换算）
-  2. `04-function-reference/11-rate-limiter-functions.md`：`PROXY_MaxParallelRequestsHandler_v3`（`async_pre_call_hook`、三个释放入口、PTU 估算、无 Redis 降级）
-  3. `04-function-reference/12-startup-lifecycle-functions.md`：`run_server` → `_proxy_lifespan` 启动序列（8 步实测）→ `ProxyStartupEvent` 13 个初始化方法 → APScheduler 任务族；`proxy_startup_event` 薄壳结构与 `_proxy_lifespan` 真实序列已回代码核对
-- 三篇新文档 `verify --symbols` 首跑即达标（exit=0）
+- **复检**：漂移为 0（`3f4dc93b40..HEAD` 无上游代码变更）；全库 `verify --symbols` 通过，修复 VERIFY.md 自身 5 处引用
+- **补篇**（第四层 9 → 12 篇）：`10-streaming-functions.md`（CustomStreamWrapper）、`11-rate-limiter-functions.md`（PROXY_MaxParallelRequestsHandler_v3）、`12-startup-lifecycle-functions.md`（run_server → _proxy_lifespan → ProxyStartupEvent）
 
 ## 偏移换算规则备忘
 
@@ -54,12 +55,8 @@
 
 ## 2026-11-07 规范化刷新（source-doc-refresh）
 
-- **漂移审计**：基准 `3f4dc93b40` 与 HEAD 间上游代码 **0 commit**（仅本库自身提交），16 组核心「文件+符号」抽检全部命中，无需内容重写
-- **记法净化**：清除全部 41 处绝对行号残留（28 处 `（NNNN 行处）` 快照 + 13 处 `py:NNNN`/裸行号），全库改为纯「符号 + 偏移」定位；快照行号仅保留于本文件历史记录
-- **符号级校验纠错**（verify 之外另跑 `--symbols` 抓出，属「文件对、符号错」类硬伤）：
-  1. `02-walkthrough/02-full-path-trace.md` 的 `_common_response_headers()` 系臆造名，实际是 `common_request_processing.py :: cost_headers()`
-  2. `03-deep-dive/08-cost-logging-persistence.md` 的 `async_log_failure_event` 系臆造名，实际是 `_ProxyDBLogger :: async_post_call_failure_hook()`
-  3. `01-skeleton/01-what-is-litellm.md` 把 `make_core()` 归到 `router.py`（实际定义在 `router_core.py`，router.py 只是调用方）
-  4. `04-function-reference/07-provider-transform-functions.md` §7 的 BaseConfig 路径曾误指不存在的旧文件 `base_llm/completion_transformation.py`，已改 `base_llm/chat/transformation.py`
-- **上游文档扫描（4b）**：全仓库 AGENTS.md + ARCHITECTURE.md 用同一工具体检，发现并修复 1 处真实路径失效（`tests/e2e/AGENTS.md` 的 fixture 路径，实际在 `tests/e2e/ui/fixtures/` 下）；其余命中均为占位名/尾段缩写等合法形态
-- **工具落地**：`.progress/sr_tools.py`（locate/outline/offset/verify --symbols，带缓存）、`.progress/UPDATE-SPEC.md`、`.progress/state.json`、`.progress/tasks.json`；全库与上游扫描 exit=0
+- **漂移审计**：基准 `3f4dc93b40` 与 HEAD 间上游代码 0 commit，16 组核心「文件+符号」抽检全部命中
+- **记法净化**：清除 41 处绝对行号残留，全库改纯「符号 + 偏移」定位
+- **符号级校验纠错**：修正 2 处臆造符号名、2 处文件归属（详见上表对应行）
+- **上游文档扫描（4b）**：修复 `tests/e2e/AGENTS.md` fixture 路径（实际在 `tests/e2e/ui/fixtures/` 下）
+- **工具落地**：`.progress/sr_tools.py`、`.progress/UPDATE-SPEC.md`、`.progress/state.json`、`.progress/tasks.json`
