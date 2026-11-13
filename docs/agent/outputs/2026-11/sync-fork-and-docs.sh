@@ -2,12 +2,23 @@
 # 把 litellm fork 的 main 同步到上游最新，并把 docs/sourceReader 文档分支
 # 同步到最新上游 + 本地文档提交，最后推送到 origin。
 #
-# 用法: bash sync-fork-and-docs.sh
+# 用法: bash docs/agent/outputs/2026-11/sync-fork-and-docs.sh
+#       （脚本可放在仓库任意位置，REPO_ROOT 由向上找 .git 目录确定）
 # 依赖: 已配置 remote origin (fork) 与 upstream (https://github.com/berriai/litellm.git)
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 从脚本所在目录向上找到含 .git 的目录，即仓库根（脚本可能位于仓库任意位置）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
+while [ ! -d "$REPO_ROOT/.git" ]; do
+    parent="$(dirname "$REPO_ROOT")"
+    if [ "$parent" = "$REPO_ROOT" ]; then
+        echo "!! 未找到仓库根目录（向上找不到 .git），请在仓库内运行本脚本" >&2
+        exit 1
+    fi
+    REPO_ROOT="$parent"
+done
 cd "$REPO_ROOT"
 
 DOC_BRANCH="litellm_source_reader_docs"
