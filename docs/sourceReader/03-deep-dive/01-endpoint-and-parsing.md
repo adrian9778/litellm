@@ -171,6 +171,8 @@ messages = validate_and_fix_openai_messages(
 
 `/utils/token_counter` 端点（`proxy_server.py :: token_counter :: +0`，16094 起）现在把计数结果与发起推理调用的 `litellm_call_id` 关联：签名带 `litellm_call_id: Annotated[str | None, Header(alias=LITELLM_CALL_ID_HEADER)]`（调用方可带 `x-litellm-call-id` 请求头进来），函数体在 16114 处把 `count_request_tokens(...)` 包进 `litellm/proxy/common_utils/token_count_log.py :: answered_with_litellm_call_id :: +0`（143 起）。该助手在成功应答与错误应答上都 `setdefault(LITELLM_CALL_ID_HEADER, litellm_call_id)`，把调用 id 写回响应头，这样计数的日志行能与那次推理调用的日志 join 起来。常量 `LITELLM_CALL_ID_HEADER = "x-litellm-call-id"` 定义在 `litellm/proxy/common_utils/openai_error_payload.py :: LITELLM_CALL_ID_HEADER :: +0`（19 起），错误载荷同样带这个头。
 
+**计数口径更新（#51447 / #51334）**：token 计数不再只数消息正文，还计入对话中途的工具变化与 Anthropic server tool 历史。`litellm/litellm_core_utils/token_counter.py` 新增 `_tool_change_tokens`（1990 起，`count_function` 判据，工具结构变了会额外计 token）、`_is_text_block`（1874）、`_has_only_text_content`（1880）、`has_only_text_content`（1892，用于判定纯文本消息）——中途换工具或带 server tool 历史的消息，计数结果会随之变化。
+
 ### SSE keepalive 与 guardrail block（spec 事实 B/#51114）
 
 `base_process_llm_request` 的返回语句（`+43` 处）调用 `open_sse_before_first_byte`（`common_request_processing.py :: open_sse_before_first_byte :: +0`，1719 起），把上游 `ttft` 静默期填上 `: ping` 注释帧。端点把 `on_passthrough_block` 回传进来：当 keepalive 已打开响应、之后 guardrail 拦截时，流式 block 经 `_late_block_or_failure`（`common_request_processing.py :: _late_block_or_failure :: +0`，1683 起）中继给 `on_passthrough_block`，把 block 的流透传给客户端，而不是把 block 当普通失败帧。`ttft_keepalive_interval`（`common_request_processing.py :: ttft_keepalive_interval :: +0`，1623 起）决定是否启用 keepalive，是否启用取决于 `litellm_settings.sse_keepalive_ping_interval_seconds`。

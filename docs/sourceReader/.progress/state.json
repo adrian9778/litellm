@@ -1,15 +1,18 @@
 {
   "library": "docs/sourceReader",
-  "baseline_commit": "0608a41a07",
-  "baseline_subject": "upstream/main @ 0608a41a07 (2026-11-12 snapshot; fork main was pinned at 3f4dc93b40)",
+  "baseline_commit": "df8b3b498e",
+  "baseline_subject": "upstream/main @ df8b3b498e (2026-11-13; +97 commits over 0608a41a07)",
   "generated": "2026-11-12",
   "refresh": {
-    "date": "2026-11-12",
-    "action": "full-regeneration on upstream latest",
-    "code_drift_since_baseline": 0,
-    "upstream_commits_rebased": 392,
-    "arch_change": "router_python_core.py deleted (Rust core); new litellm/redis + rust_forward + server_listener; added layer-4 doc 13",
-    "tool_fix": "sr_tools offset/locate off-by-N on blank-line-prefixed defs; anchored via grep cross-check"
+    "date": "2026-11-13",
+    "action": "incremental: workspace-package move + behavior changes",
+    "upstream_commits_rebased": 97,
+    "arch_change": "litellm-rust->litellm/rust, ui/scripts/deploy under litellm, ARCHITECTURE.md deleted",
+    "covered": [
+      "rate-limiter borrow",
+      "auth pre-body-reject #51428",
+      "token_counter tool-change #51447"
+    ]
   },
   "layers": {
     "1-skeleton": 4,
@@ -20,5 +23,6 @@
   "refresh_2026_11_12": "全量重生成：392 上游 commit rebase；7 篇 router 文档重写为 Rust 决策链；新增 13-rust-router-core；行为变化清单全写入；verify --symbols 全库 0 硬伤",
   "spec": ".progress/UPDATE-SPEC.md",
   "tools": ".progress/sr_tools.py",
-  "verification": "VERIFY.md"
+  "verification": "VERIFY.md",
+  "refresh_2026_11_13": "增量刷新：workspace 包搬家路径修正（5 篇 12 处 litellm-rust->litellm/rust）；11-rate-limiter 增 §8b 借用机制；02-auth-pipeline 增先头拒绝；01-endpoint 补 token_counter 计数口径；verify 全库 0 硬伤"
 }

@@ -4,7 +4,7 @@
 
 ## 0. 一句话定位
 
-`litellm.Router` 的核心（`RouterCore`，`router_core.py :: RouterCore` 27）由 `make_core`（`router_core.py :: make_core` 51）无条件构建为 `litellm/router_rust/core.py :: RustCore`（1394 起）。`RustCore` 是 pyo3 句柄：经 `litellm/rust_bridge/_native.pyi` 绑定 `litellm-rust/crates/router-core`（Rust crate），在**同一个进程内**拥有选路、重试、fallback、冷却、用量计数。Rust 核心不直接发推理请求：它让宿主 step 经 `litellm/router_python_host.py :: PythonHost :: invoke` 回调 litellm 包里的 `acompletion` / `aembedding` 等端点，由 litellm 的 HTTP 处理层实际打 provider。执行层由 `litellm/rust_bridge/catalog.py :: RouteRule` 决定走 Python 还是 Rust 专有路径。
+`litellm.Router` 的核心（`RouterCore`，`router_core.py :: RouterCore` 27）由 `make_core`（`router_core.py :: make_core` 51）无条件构建为 `litellm/router_rust/core.py :: RustCore`（1394 起）。`RustCore` 是 pyo3 句柄：经 `litellm/rust_bridge/_native.pyi` 绑定 `litellm/rust/crates/router-core`（Rust crate），在**同一个进程内**拥有选路、重试、fallback、冷却、用量计数。Rust 核心不直接发推理请求：它让宿主 step 经 `litellm/router_python_host.py :: PythonHost :: invoke` 回调 litellm 包里的 `acompletion` / `aembedding` 等端点，由 litellm 的 HTTP 处理层实际打 provider。执行层由 `litellm/rust_bridge/catalog.py :: RouteRule` 决定走 Python 还是 Rust 专有路径。
 
 ## 1. 架构总览
 
@@ -68,7 +68,7 @@ litellm/router_rust/core.py :: RustCore :: build() :: +0（1519 起，@classmeth
 ## 3. Rust crate 结构
 
 ```text
-litellm-rust/crates/router-core/src/      # Rust 路由核心（pyo3 暴露给 _native）
+litellm/rust/crates/router-core/src/      # Rust 路由核心（pyo3 暴露给 _native）
   call.rs      // 调用循环：select → attempt → retry/fallback（步骤机）
   select.rs    // 选路：候选、策略输入、服务
   retry.rs     // 同组重试
@@ -81,8 +81,8 @@ litellm-rust/crates/router-core/src/      # Rust 路由核心（pyo3 暴露给 _
   host.rs / host_index.rs                // 宿主索引
   resolve.rs / group_info.rs / model_info.rs / lookup.rs
 
-litellm-rust/crates/router-types/        # 跨 crate 共享类型
-litellm-rust/crates/gateway-forward/     # Rust 网关转发（LITELLM_RUST_FIRST 路径，非本篇路由核心）
+litellm/rust/crates/router-types/        # 跨 crate 共享类型
+litellm/rust/crates/gateway-forward/     # Rust 网关转发（LITELLM_RUST_FIRST 路径，非本篇路由核心）
 ```
 
 Rust 核心产出一串 **step**（`call.rs`），宿主 `_run_steps` 逐个应答：`attempt` / `select` / `pre_route` / `sleep` / `allow_fallback` / `refuse_fallbacks` / `cache` / `done` / `failed`（`_run_steps` `+0` 的 `match step["kind"]`）。

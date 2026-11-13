@@ -6,7 +6,7 @@
 
 `llm_router.acompletion(**data)` 内部，怎么从 N 个 deployment 里选出 1 个？失败后重试和回退按什么顺序发生？冷却是什么？
 
-旧文写的是 `router_python_core.py :: PythonCore` 的双核实现，该文件已删除（#50178 整文件删除），Rust 核心接管。本篇按现行架构重写：Router 是纯门面，选路、重试、fallback、冷却、用量全部由 Rust 核心（`litellm-rust/crates/router-core`）在进程内持有，Python 侧只保留有状态 LB 与 pre-routing 两个宿主 step 和 provider 执行回跳。
+旧文写的是 `router_python_core.py :: PythonCore` 的双核实现，该文件已删除（#50178 整文件删除），Rust 核心接管。本篇按现行架构重写：Router 是纯门面，选路、重试、fallback、冷却、用量全部由 Rust 核心（`litellm/rust/crates/router-core`）在进程内持有，Python 侧只保留有状态 LB 与 pre-routing 两个宿主 step 和 provider 执行回跳。
 
 ## 门面、核心与宿主的分工
 
@@ -54,7 +54,7 @@ _drive() ── _run() ── _run_steps()   # 对 call 的步骤逐个应答，
 | `sleep` | 宿主 `_host.sleep` | 重试退避 |
 | `done` / `failed` | — | 结束，收尾 |
 
-重试、fallback、cooldown、选路的循环调度逻辑都在 `litellm-rust/crates/router-core`（`select.rs`、`retry.rs`、`fallback.rs`、`precall.rs`、`prerouting.rs`），Python 侧只通过上面的 step 应答宿主。
+重试、fallback、cooldown、选路的循环调度逻辑都在 `litellm/rust/crates/router-core`（`select.rs`、`retry.rs`、`fallback.rs`、`precall.rs`、`prerouting.rs`），Python 侧只通过上面的 step 应答宿主。
 
 ## 选部署：宿主有状态 step + Rust 侧过滤
 
@@ -77,7 +77,7 @@ Rust 侧发出 `select` step 时，`_Driver.select` 调 `pick_async`（`router_r
 
 ## 冷却机制
 
-冷却 = 部署失败太多次后，在时间窗口内被整体跳过。Rust 核心进程内决定冷却判定（`litellm-rust/crates/router-core/precall.rs` / `outcome.rs`），持久化接 `litellm/redis/stores/` 的 store 家族：
+冷却 = 部署失败太多次后，在时间窗口内被整体跳过。Rust 核心进程内决定冷却判定（`litellm/rust/crates/router-core/precall.rs` / `outcome.rs`），持久化接 `litellm/redis/stores/` 的 store 家族：
 
 ```
 litellm/redis/stores/router_cooldowns/handle.py :: RouterCooldownsHandle :: +0    # 冷却表（has_redis/put/active/...）
@@ -108,7 +108,7 @@ with enter_deployment_slot(port, plan, deployment, kwargs):   # max_parallel_req
 
 ## 重试层
 
-重试调度在 Rust 核心（`litellm-rust/crates/router-core/retry.rs`），Python 侧只提供策略解析与错误分类。现行符号：
+重试调度在 Rust 核心（`litellm/rust/crates/router-core/retry.rs`），Python 侧只提供策略解析与错误分类。现行符号：
 
 - `RetryPolicy` 类型：`litellm/types/router.py :: RetryPolicy :: +0`（176 行）
 - `resolved_retry_policy`：`router_rust/surface/retries.py :: resolved_retry_policy :: +0`（24 行），把请求里 `retry_policy` 的值规整成 `RetryPolicy`
@@ -120,7 +120,7 @@ with enter_deployment_slot(port, plan, deployment, kwargs):   # max_parallel_req
 
 ## Fallback 层
 
-fallback 调度在 Rust 核心（`litellm-rust/crates/router-core/fallback.rs`）。三类回退按序尝试（配置于 YAML 的 `router_settings.fallbacks` 等）：
+fallback 调度在 Rust 核心（`litellm/rust/crates/router-core/fallback.rs`）。三类回退按序尝试（配置于 YAML 的 `router_settings.fallbacks` 等）：
 
 | 类型 | 触发条件 | 行为 |
 |---|---|---|

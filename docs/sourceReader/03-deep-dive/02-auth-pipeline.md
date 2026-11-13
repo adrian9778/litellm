@@ -16,7 +16,9 @@ litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth() :: +0
 
 ```mermaid
 flowchart TD
-    Entry["user_api_key_auth :: +0"] --> DeferBody["_read_request_body_deferring_parse_failure :: +19"]
+    Entry["user_api_key_auth :: +0"] --> RejectHead["_reject_from_headers_before_reading_body :: +20（4675）"]
+    RejectHead -->|"blocked/over-limit 头已定罪，直接拒"| RejectOut["429 / 403"]
+    RejectHead -->|"其余：读 body"| DeferBody["_read_request_body_deferring_parse_failure :: +23"]
     DeferBody --> Scope["spend_counter_batch_scope(_spend_counter_store) :: +31"]
     Scope --> Builder["user_api_key_auth_builder :: +34"]
     Builder --> Validate["validate_resolved_virtual_key :: +0（3094）"]
@@ -35,7 +37,8 @@ flowchart TD
 ```
 user_api_key_auth(request, ...)
 ├─ _ensure_parent_otel_span_on_request_state(request)      # 先建 server span，坏 body 也能留 trace
-├─ _read_request_body_deferring_parse_failure()            # 读 body 但推迟解析错误（+19）
+├─ _reject_from_headers_before_reading_body()              # 头信息已定罪（blocked/over-limit key）先拒，不读 body（+20，4675）
+├─ _read_request_body_deferring_parse_failure()            # 读 body 但推迟解析错误（+23）
 ├─ get_request_route()                                     # 路由识别
 ├─ phase_span("auth ...") 内：
 │   ├─ user_api_key_auth_builder(...)                      # 真正的鉴权构建器（+34）
@@ -45,7 +48,9 @@ user_api_key_auth(request, ...)
 └─ 若 body 解析失败：_record_unparsable_body_failure() 后再抛
 ```
 
-「推迟解析失败」是个细节设计：body JSON 坏了也要先试鉴权，这样错误响应里能带上调用者身份（比如 master key 用户能拿到 400 而不是 401）。`_read_request_body_deferring_parse_failure`（`user_api_key_auth.py :: _read_request_body_deferring_parse_failure :: +0`，2212 起）返回 `(dict, ProxyException | None)`，把解析失败以值的形式带回，由外层在身份播种之后再抛出。
+「推迟解析失败」是个细节设计：body JSON 坏了也要先试鉴权，这样错误响应里能带上调用者身份（比如 master key 用户能拿到 400 而不是 401）。`_read_request_body_deferring_parse_failure`（`user_api_key_auth.py :: _read_request_body_deferring_parse_failure :: +0`，2214 起）返回 `(dict, ProxyException | None)`，把解析失败以值的形式带回，由外层在身份播种之后再抛出。
+
+**#51428 先头拒绝**：`_reject_from_headers_before_reading_body`（`user_api_key_auth.py :: _reject_from_headers_before_reading_body :: +0`，2236 起，调用点在 `user_api_key_auth` 内 4675，即 +20）只认已在缓存里的 key——blocked 或已被限流击穿的 key，凭请求头信息就能定罪，直接回 429/403，**不再为它读整个请求体**。这样对限流 key 的并发大 payload 重试，不再每个都缓冲进内存只为回一个 429。只有 `RouteChecks.is_llm_api_route` 的 LLM 路由才走这个预判；缓存 miss 则照旧走完整鉴权路径。
 
 一个与旧版不同的编排点：`user_api_key_auth` 现在整个鉴权段包进 `phase_span(f"auth {route}")` + `spend_counter_batch_scope(_spend_counter_store())`（`user_api_key_auth() :: +31`）。`_spend_counter_store()`（`user_api_key_auth.py :: _spend_counter_store :: +0`，4479 起）返回 proxy 的 `spend_counter_store`（`proxy_server.py` 里由 `litellm/redis/stores/spend_counters` 构造），预算扣减和花费读取走这一层（spec 事实 B/#50170，`_spend_counter_redis_cache` 已删）。
 

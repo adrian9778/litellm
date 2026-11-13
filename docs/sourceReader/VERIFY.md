@@ -35,6 +35,17 @@
 | 04-function-reference/12 | `run_server`（1298）分支重测；`server_listener.py :: PrivateListener`（22）；`rust_forward_mode`（47）；`supervise`（supervisor 22）；`_proxy_lifespan` 序列；`ProxyStartupEvent`（11249） | grep 实测 | 通过 |
 | 04-function-reference/13（新） | `make_core`（51）；`RustCore`（1394）`_drive`（2880）`_run_steps`（2930）；`StrategySelectors`（97）`as_output_cap`（627）`stamped_client_ceiling`（639）；`RustRetries`（retries.py 235）`RustFallbacks`（fallbacks.py 115）；`resolved_retry_policy`（24）；`PythonHost.invoke`（107）；`catalog.py :: RouteRule`（108） | grep 实测 | 通过 |
 
+## 2026-11-13 增量刷新（workspace 包搬家 + 行为变化）
+
+- **基线更新**：`0608a41a07` → `upstream/main @ df8b3b498e`（2026-11-13），上游再 +97 commit（rebase 至本分支）
+- **结构搬家（#51000/#51006/#50992/#50981/#50966）**：workspace 包全数收进 `litellm/` 包内——`litellm-rust/` → `litellm/rust/`、`ui/` → `litellm/ui/`、`scripts/` → `litellm/scripts/`、`deploy/` → `litellm/deploy/`；根级 `ARCHITECTURE.md`/`gateway/`/`backend/` 删除或合并。`sr_tools` 的 `PROD_ROOTS` 收窄到 `("litellm",)`，`FALLBACK_ROOTS` 到 `("tests",".github")`
+- **路径修正**：5 篇文档 12 处 `litellm-rust/crates/...` → `litellm/rust/crates/...`（04-router-decision、13-rust-router-core、04-router-functions、10-streaming、07-streaming）；`x-litellm-rust-peer` 是 HTTP 头名，未改
+- **新增行为覆盖**：
+  - 11-rate-limiter 新增 §8b 团队模型限额借用机制（`BorrowingTeamModelLimits`/`inherited_team_model_limit`/`borrowing_team_model_limits`/`team_model_limit_max_borrow_multiple` + dynamic_rate_limiter_v3 的 `AlternateGrant`/`SteeredModel`/`_team_model_settlement` + `priority_class_share.py`，#51328/#51359/#51366/#51350/#51417/#51415/#51367）
+  - 02-auth-pipeline 新增 §#51428 先头拒绝（`_reject_from_headers_before_reading_body`，blocked/over-limit key 凭头信息先拒、不读 body）
+  - 01-endpoint 补 token_counter 计数口径（`_tool_change_tokens`/`_is_text_block`/`has_only_text_content`，#51447/#51334）
+- 版本 1.110.0 → 1.111.0；`proxy_server.py` 23099 → 23033 行
+
 ## 2026-11-12 全量重生成（本次）
 
 - **基线更新**：`3f4dc93b40`（2026-11-04）→ `upstream/main @ 0608a41a07`（2026-11-12），上游 392 commit、`litellm/` 下 907 文件

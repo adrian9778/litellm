@@ -1,12 +1,41 @@
 {
   "open": [],
   "done": [
-    {"id": "generate-4layer", "desc": "四层文档库首次生成（21 篇 + README），基线 3f4dc93b40", "date": "2026-11-07"},
-    {"id": "verify-per-doc", "desc": "每篇 3~5 处引用回核，5 项事实修正，记录于 VERIFY.md", "date": "2026-11-07"},
-    {"id": "refresh-notation", "desc": "source-doc-refresh：清除 41 处绝对行号残留；符号级校验纠 4 处硬伤；补 sr_tools + UPDATE-SPEC + state/tasks", "date": "2026-11-07"},
-    {"id": "upstream-scan", "desc": "4b 上游扫描：修 tests/e2e/AGENTS.md fixture 路径；工具补豁免档与缓存", "date": "2026-11-07"},
-    {"id": "recheck-and-fill", "desc": "2026-11-08 复检：漂移 0；补第四层 10/11/12 三篇；verify --symbols 达标", "date": "2026-11-08"},
-    {"id": "full-regenerate-2026-11-12", "desc": "全量重生成：rebase 上游 392 commit；7 篇 router 文档重写为 Rust 决策链；新增 13-rust-router-core；全部 26+1 篇重写并 verify --symbols 0 硬伤；修 sr_tools offset 空行偏移 bug；README/VERIFY/state/tasks 收尾", "date": "2026-11-12"}
+    {
+      "id": "generate-4layer",
+      "desc": "四层文档库首次生成（21 篇 + README），基线 3f4dc93b40",
+      "date": "2026-11-07"
+    },
+    {
+      "id": "verify-per-doc",
+      "desc": "每篇 3~5 处引用回核，5 项事实修正，记录于 VERIFY.md",
+      "date": "2026-11-07"
+    },
+    {
+      "id": "refresh-notation",
+      "desc": "source-doc-refresh：清除 41 处绝对行号残留；符号级校验纠 4 处硬伤；补 sr_tools + UPDATE-SPEC + state/tasks",
+      "date": "2026-11-07"
+    },
+    {
+      "id": "upstream-scan",
+      "desc": "4b 上游扫描：修 tests/e2e/AGENTS.md fixture 路径；工具补豁免档与缓存",
+      "date": "2026-11-07"
+    },
+    {
+      "id": "recheck-and-fill",
+      "desc": "2026-11-08 复检：漂移 0；补第四层 10/11/12 三篇；verify --symbols 达标",
+      "date": "2026-11-08"
+    },
+    {
+      "id": "full-regenerate-2026-11-12",
+      "desc": "全量重生成：rebase 上游 392 commit；7 篇 router 文档重写为 Rust 决策链；新增 13-rust-router-core；全部 26+1 篇重写并 verify --symbols 0 硬伤；修 sr_tools offset 空行偏移 bug；README/VERIFY/state/tasks 收尾",
+      "date": "2026-11-12"
+    },
+    {
+      "id": "incremental-2026-11-13",
+      "desc": "workspace 包搬家刷新：litellm-rust->litellm/rust 等路径修正；11-rate-limiter 增借用机制；02-auth-pipeline 增先头拒绝；01-endpoint 补 token_counter 口径；基线 df8b3b498e；verify 全库 0 硬伤",
+      "date": "2026-11-13"
+    }
   ],
-  "next_check": "git rev-list --count 0608a41a07..HEAD 超过 50 或出现模块拆分/搬家合并时重跑 source-doc-refresh"
+  "next_check": "git rev-list --count df8b3b498e..HEAD 超过 50 或出现模块拆分/搬家合并时重跑 source-doc-refresh"
 }

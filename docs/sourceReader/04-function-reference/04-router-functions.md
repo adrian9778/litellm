@@ -2,7 +2,7 @@
 
 > 所属层级：第四层（源码补齐） | 覆盖：`router.py` 门面、`router_api.py` 设置与观察面、`router_python_host.py` 宿主边界
 >
-> 核心边界：`litellm.Router` 是一个**零逻辑门面**。它不选路、不重试、不冷却。所有决策在进程内的 Rust 核心（`litellm/router_rust/core.py :: RustCore`，经 `litellm-rust/crates/router-core`）里完成。Rust 核心只经 `router_python_host.py :: PythonHost` 这一个边界回到 litellm 包执行推理。本篇文章从**门面视角**讲 Router 如何把成员转发给核心；Rust 核心内部（make_core → build → 端点 → steps → _Driver）见 [13-rust-router-core.md](13-rust-router-core.md)。
+> 核心边界：`litellm.Router` 是一个**零逻辑门面**。它不选路、不重试、不冷却。所有决策在进程内的 Rust 核心（`litellm/router_rust/core.py :: RustCore`，经 `litellm/rust/crates/router-core`）里完成。Rust 核心只经 `router_python_host.py :: PythonHost` 这一个边界回到 litellm 包执行推理。本篇文章从**门面视角**讲 Router 如何把成员转发给核心；Rust 核心内部（make_core → build → 端点 → steps → _Driver）见 [13-rust-router-core.md](13-rust-router-core.md)。
 
 ## 0. 一句话定位
 

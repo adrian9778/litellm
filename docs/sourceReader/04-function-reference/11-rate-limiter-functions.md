@@ -184,6 +184,44 @@ RateLimitScope("model_saturation_check", model).counter("tokens")
 
 即饱和值桶走 `RateLimitScope`（`redis/stores/rate_limits/types.py :: +0`）的 `counter(kind)` 生成 `RateLimitCounter`，统一由 `self.v3_limiter.rate_limits`（`RateLimitStore`）读取，与主限流器共享同一 Rust store 句柄（#50170）。配置饱和值 TTL 用 `_get_priority_settings().saturation_check_cache_ttl`（`+0` 定义行 100 附近）。
 
+## 8b. 团队模型限额的借用机制（#51328/#51359/#51366/#51350/#51415/#51367）
+
+需求视角：当多个团队共享一个模型的 TPM/RPM 限额时，某个团队暂时用不满自己的份额，其他团队不该被空耗的空闲容量挡在 429 后面。本轮让团队能借另一团队的空闲模型容量，借多少有个上限，且借用会精确结算到实际服务的团队，避免多借或拿别人的额度撑场。
+
+技术视角：借用由 `parallel_request_limiter_v3.py` 与 `dynamic_rate_limiter_v3.py` 配合实现。
+
+**借用限额判定**（`parallel_request_limiter_v3.py`）：
+
+| 符号 | 定义行 | 作用 |
+|---|---|---|
+| `dynamic_rate_limiter_covers` | 171 | 该 model group 是否走动态限流器（借用只在动态限流器覆盖的组内生效） |
+| `inherited_team_model_limit` | 186 | 从 team 继承来的 `model_tpm_limit`/`model_rpm_limit` |
+| `team_model_limit_max_borrow_multiple` | 234 | 读配置键 `team_model_limit_max_borrow_multiple`，封顶「一个团队最多借到本队限额的几倍」 |
+| `BorrowingTeamModelLimits` | 211 | 携带 `tpm`/`rpm`/`max_borrow_multiple` 的借用描述；`borrow_ceiling`（221）算实际借到多少 |
+| `NO_BORROWING` | 231 | 无借用空间时返回的哨兵 |
+| `borrowing_team_model_limits` | 251 | 入口：按 `user_api_key_dict` + `RateLimitedModel` 组装 `BorrowingTeamModelLimits`，动态限流器不覆盖则 `NO_BORROWING` |
+
+`async_pre_call_hook`（类 `_PROXY_MaxParallelRequestsHandler_v3`，定义 858）在 `+2738` 处调 `borrowing_team_model_limits` 把借用额度喂进释放判定。请求 stash 重构为 `claim_request_stash_for_data`（739）/ `request_stash_for_callback`（799）。
+
+**dynamic_rate_limiter_v3 侧的结算与引导**（`dynamic_rate_limiter_v3.py`）：
+
+| 符号 | 定义行 | 作用 |
+|---|---|---|
+| `ModelPreference` | 99 | 团队偏好的模型 + 允许的备选 |
+| `AlternateGrant` | 90 | 给「偏好模型饱和」的团队一个可用的备选模型授权 |
+| `SteeredModel` | 110 | 被引导过去的备选模型 |
+| `alternate_grant_for` | 116 | 查该团队/请求在当前模型下有没有可用的备选授权 |
+| `alternates_for` | 335 | 列出按价格相近（`_priced_within`，297）筛选的备选模型 |
+| `_tightest_team_share` | 383 | 在多个描述符里取最紧的团队份额 |
+| `_SettlementMetadata` / `_SettlementLoggingObject` | 350 / 365 | 借用结算的元数据与日志对象 |
+| `_team_model_settlement` | 484 | 把一次请求的用量结算到实际服务该请求的团队 |
+| `_BorrowingTeamShare` | 437 | 记录借出/借入的 share 与是否被强制（`enforced`） |
+| `_get_priority_settings` | 528 | 读 `PriorityReservationSettings`（saturation_check_cache_ttl、share 配置） |
+
+priority class 的均分规则在 `litellm/proxy/hooks/priority_class_share.py`（`pool_member` 32 / `team_member` 38 / `is_pool_member` 43 / `counter_value` 47 / `TeamShare` 54 / `team_share` 60 / `ActiveTeamRegistry` 86）：priority class 的份额在活跃团队间均分（#51366），prometheus 暴露 per team+model 的 share / borrowed / throttle 指标（#51417），模型饱和后 borrower 归还全额 share（#51415）。router fallbacks、嵌套调用、WebSocket turns、超大 prompt 同样受借用约束（#51367）。
+
+**行为语义**：借用只在动态限流器覆盖的 model group 内生效；borrow 有 `max_borrow_multiple` 封顶；结算走 `_team_model_settlement` 落到实际服务团队，不占发起方自己的空闲额度；灵活团队在偏好模型饱和时被引导到 `_priced_within` 的备选。
+
 ## 9. v3 与旧版
 
 模块内同时保留 v1/v2 处理器（`hooks/__init__.py` 里 `PROXY_MaxParallelRequestsHandler`、`_PROXY_MaxParallelRequestsHandler` 导出做向后兼容），新配置默认走 v3（descriptor 模型 + PTU 支持）。读代码时按 `_PROXY_MaxParallelRequestsHandler_v3` 找，别被同名旧类带偏。

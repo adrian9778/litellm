@@ -108,4 +108,4 @@ SSE 全部 chunk 发完（或客户端断开）
 
 到这里，客户端已拿到响应。还没发生的：成本计算细节、回调怎么被驱动、spend 怎么落库。这就是下一篇。
 
-补充一个归属澄清：reasoning item id 的稳定化（#51243）不在 `CustomStreamWrapper`，而是分散在 `litellm/responses/`（`streaming_iterator.py :: BaseResponsesAPIStreamingIterator`、`utils.py :: ResponsesAPIRequestUtils :: affinity_item_id() :: +0`）与 Rust `litellm-rust/crates/inference-responses/src/ids.rs`（`encitem_` 前缀 + 加密内容亲和）。responses 流的统一与计费在第四层第 10 篇（`04-function-reference/10-streaming-functions.md`）单独覆盖。
+补充一个归属澄清：reasoning item id 的稳定化（#51243）不在 `CustomStreamWrapper`，而是分散在 `litellm/responses/`（`streaming_iterator.py :: BaseResponsesAPIStreamingIterator`、`utils.py :: ResponsesAPIRequestUtils :: affinity_item_id() :: +0`）与 Rust `litellm/rust/crates/inference-responses/src/ids.rs`（`encitem_` 前缀 + 加密内容亲和）。responses 流的统一与计费在第四层第 10 篇（`04-function-reference/10-streaming-functions.md`）单独覆盖。

@@ -165,7 +165,7 @@ litellm/litellm_core_utils/streaming_handler.py :: CustomStreamWrapper :: fetch_
 
 ## 11. reasoning item id 归属澄清（#51243）
 
-reasoning item id 的稳定化**不在** `CustomStreamWrapper`。它在 `litellm/responses/`（`streaming_iterator.py`、`utils.py :: ResponsesAPIRequestUtils.affinity_*`，实测 `utils.py:178` 类、`affinity_model_id` 545 行、`affinity_item_id` 553 行）与 Rust `litellm-rust/crates/inference-responses/src/ids.rs`（`encitem_` 前缀生成）实现。`CustomStreamWrapper` 只做 OpenAI chat 流的归一，两者职责不同。
+reasoning item id 的稳定化**不在** `CustomStreamWrapper`。它在 `litellm/responses/`（`streaming_iterator.py`、`utils.py :: ResponsesAPIRequestUtils.affinity_*`，实测 `utils.py:178` 类、`affinity_model_id` 545 行、`affinity_item_id` 553 行）与 Rust `litellm/rust/crates/inference-responses/src/ids.rs`（`encitem_` 前缀生成）实现。`CustomStreamWrapper` 只做 OpenAI chat 流的归一，两者职责不同。
 
 ```mermaid
 flowchart LR
