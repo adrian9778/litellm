@@ -165,24 +165,27 @@ litellm/proxy/hooks/parallel_request_limiter_v3.py :: _PROXY_MaxParallelRequests
 litellm/proxy/hooks/dynamic_rate_limiter_v3.py :: dynamic_rate_limiter_v3 :: _get_saturation_value_from_cache() :: +0
 ```
 
-`dynamic_rate_limiter_v3.py` 的动态限流器持有 `self.v3_limiter = PROXY_MaxParallelRequestsHandler_v3(self.internal_usage_cache, ...)`（`+0` 附近，定义行 95）。`_get_saturation_value_from_cache`（定义行 104）的计数器读已从旧的 cache 直读改为走 `RateLimitScope(...).counter(...)` + `v3_limiter.rate_limits.get`：
+`dynamic_rate_limiter_v3.py` 的动态限流器持有 `self.v3_limiter = PROXY_MaxParallelRequestsHandler_v3(self.internal_usage_cache, ...)`，`self.active_teams = ActiveTeamRegistry(internal_usage_cache)`（活跃团队注册表，priority class 均分用）。`_get_saturation_value_from_cache`（定义行 589）的计数器读走 `rate_limits.get_from_redis`（#51519）：**饱和值以 Redis 里的为准**，让每个 worker 对「模型是否饱和」达成一致；读到的值回写本 worker 内存作 TTL 缓存（`saturation_check_cache_ttl`），Redis 失败或无 Redis 时降级为本地镜像：
 
 ```python
 async def _get_saturation_value_from_cache(self, counter: RateLimitCounter) -> int | float | str | None:
-    value: Final = await self.v3_limiter.rate_limits.get(
-        counter, backfill_ttl=self._get_saturation_check_cache_ttl()
-    )
+    rate_limits: Final = self.v3_limiter.rate_limits
+    try:
+        value: Final = await rate_limits.get_from_redis(counter, backfill_ttl=self._get_saturation_check_cache_ttl())
+    except Exception:
+        local: Final = rate_limits.local((counter,))[0]
+        return None if isinstance(local, dict) else local
     return None if isinstance(value, dict) else value
 ```
 
-调用处（`+147` / `+162`）构造：
+调用处构造：
 
 ```python
 RateLimitScope("model_saturation_check", model).counter("requests")
 RateLimitScope("model_saturation_check", model).counter("tokens")
 ```
 
-即饱和值桶走 `RateLimitScope`（`redis/stores/rate_limits/types.py :: +0`）的 `counter(kind)` 生成 `RateLimitCounter`，统一由 `self.v3_limiter.rate_limits`（`RateLimitStore`）读取，与主限流器共享同一 Rust store 句柄（#50170）。配置饱和值 TTL 用 `_get_priority_settings().saturation_check_cache_ttl`（`+0` 定义行 100 附近）。
+即饱和值桶走 `RateLimitScope`（`redis/stores/rate_limits/types.py :: +0`）的 `counter(kind)` 生成 `RateLimitCounter`，读走 `RateLimitStore.get_from_redis`、写回内存作 TTL 缓存，与主限流器共享同一 Rust store 句柄（#50170）。三阶段语义：先只读检查全部限额，再决定是否放行，放行才原子递增计数；未饱和时 priority 可借空闲容量，饱和后严格按 priority 限额。
 
 ## 8b. 团队模型限额的借用机制（#51328/#51359/#51366/#51350/#51415/#51367）
 

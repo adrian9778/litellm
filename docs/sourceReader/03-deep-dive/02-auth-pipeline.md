@@ -52,6 +52,8 @@ user_api_key_auth(request, ...)
 
 **#51428 先头拒绝**：`_reject_from_headers_before_reading_body`（`user_api_key_auth.py :: _reject_from_headers_before_reading_body :: +0`，2236 起，调用点在 `user_api_key_auth` 内 4675，即 +20）只认已在缓存里的 key——blocked 或已被限流击穿的 key，凭请求头信息就能定罪，直接回 429/403，**不再为它读整个请求体**。这样对限流 key 的并发大 payload 重试，不再每个都缓冲进内存只为回一个 429。只有 `RouteChecks.is_llm_api_route` 的 LLM 路由才走这个预判；缓存 miss 则照旧走完整鉴权路径。
 
+**#51525 先头拒绝也要留日志**：拒绝前用 `_preflight_failure_request_data`（走 `_preflight_failure_model` 反解模型，最多读 64KB body、1 秒超时，`PREFLIGHT_FAILURE_JSON_BODY_MAX_BYTES`/`PREFLIGHT_FAILURE_JSON_BODY_TIMEOUT_SECONDS`）拼出失败请求资料，再经 `proxy_logging_obj.post_call_failure_hook` 记下 call id、model 与 key 的失败日志（限流检查走 `limiter.raise_if_over_limit_before_body`）。拒绝结果对调用方不变（transform 失败仍回原 rejection），只是 SpendLogs 不再缺先头拒绝这批行的归属信息。
+
 一个与旧版不同的编排点：`user_api_key_auth` 现在整个鉴权段包进 `phase_span(f"auth {route}")` + `spend_counter_batch_scope(_spend_counter_store())`（`user_api_key_auth() :: +31`）。`_spend_counter_store()`（`user_api_key_auth.py :: _spend_counter_store :: +0`，4479 起）返回 proxy 的 `spend_counter_store`（`proxy_server.py` 里由 `litellm/redis/stores/spend_counters` 构造），预算扣减和花费读取走这一层（spec 事实 B/#50170，`_spend_counter_redis_cache` 已删）。
 
 ## 构建器：三种凭证的分岔
