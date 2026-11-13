@@ -2,12 +2,12 @@
 
 ## 基准
 
-- 文档基准提交：`0608a41a07`（upstream/main tip，2026-11-12 快照）。2026-11-12 已完成全量重生成：rebase 上游 392 commit，上一基线 `3f4dc93b40` 之上全部 26+1 篇重写，新增第 4 层 13-rust-router-core.md
+- 文档基准提交：`df8b3b498e`（upstream/main tip，2026-11-13 快照）。2026-11-13 增量刷新：上一基线 `0608a41a07`（2026-11-12 全量重生成基线）之上 rebase 97 commit，修引用 + 受影响篇语义更新
 - 漂移检测：
   ```bash
-  git rev-list --count 0608a41a07..HEAD
+  git rev-list --count df8b3b498e..HEAD
   ```
-- 上游远端：`upstream` = https://github.com/berriai/litellm.git（本仓 origin 为 fork，main 钉在旧基线）
+- 上游远端：`upstream` = https://github.com/berriai/litellm.git（本仓 origin 为 fork）
 
 ## 定位记法（库内统一约定）
 
@@ -69,7 +69,7 @@ python3 -I docs/sourceReader/.progress/sr_tools.py verify docs/sourceReader/*.md
 
 9. **Router 是纯门面**（`router.py` 506 行）：`__init__` 仅 `attach(make_core(...))`，成员读写转发 `_core`；禁子类化，扩展走 `register_plugin` / `apply` / `observe`；端点名清单在 `router_rust/invoke/endpoints.py :: endpoint_names`（686 起）
 10. **`router_core.py :: make_core`（51 起，全文件 55 行）无条件 `RustCore.build`**。双核时代（`Route.ROUTER`、`PythonCore`、`router_python_core.py`）已被 #50178 终结
-11. **`router_rust/core.py :: RustCore`（1394 起）是 pyo3 句柄**（经 `rust_bridge/_native.pyi` 绑定 `litellm-rust/crates/router-core`），进程内拥有选路、重试、fallback、cooldown、用量；有状态 LB 与 pre-routing 留宿主 step（`router_rust/steps/` 下 selection、prerouting；`steps/prerouting.py :: as_output_cap`、`stamped_client_ceiling`）；provider 调用经 `router_python_host.py :: PythonHost`（58 起）`.invoke` 回 litellm 执行
+11. **`router_rust/core.py :: RustCore`（1394 起）是 pyo3 句柄**（经 `rust_bridge/_native.pyi` 绑定 `litellm/rust/crates/router-core`，#51000 已把 workspace 从根级 `litellm-rust/` 挪进 `litellm/rust/`），进程内拥有选路、重试、fallback、cooldown、用量；有状态 LB 与 pre-routing 留宿主 step（`router_rust/steps/` 下 selection、prerouting；`steps/prerouting.py :: as_output_cap`、`stamped_client_ceiling`）；provider 调用经 `router_python_host.py :: PythonHost`（58 起）`.invoke` 回 litellm 执行
 12. **执行层由 catalog 决定**：`chat_completions` 是 PYTHON_ONLY 执行；anthropic messages 是 RUST_REQUIRED（#51119），`litellm/messages/dispatch.py :: _rust_only_refusal`（189 起）抛 `UnsupportedParamsError`。两路由走同一个 Router
 13. **`LITELLM_RUST_FIRST`（`proxy/rust_forward/mode.py` SWITCH_ENV，17 起）独立于 `LITELLM_RUST`**：经 `rust_forward/supervisor` 起 Rust 网关占公网端口、Python 退 loopback（`RustPeerMiddleware` 还原客户端地址），起不来回退纯 Python；gunicorn 私有监听走 `proxy/server_listener.py :: PrivateListener`（#50871 `gunicorn_overrides`）。两者互不启用
 14. **`litellm/redis/` 新顶级包**：Rust 后端 store 家族（`stores/rate_limits :: RateLimitStore`、`stores/spend_counters`、`stores/auth_cache`、`store_settings :: RedisStoreSettings`），v3 限流器 / spend counters / 路由冷却与用量 / auth cache 已接入（#50169/#50170）
@@ -102,6 +102,19 @@ python3 -I docs/sourceReader/.progress/sr_tools.py verify docs/sourceReader/*.md
 | `proxy/auth/_spend_counter_redis_cache` | 删，改 `_spend_counter_store()`（`redis/stores/spend_counters`） |
 | `_should_skip_budget_checks` | 仍在但改 async，调用处需 await |
 | `async_completion_handler` | 从不存在（BASE/tip 均无），正名 `async_completion`（llm_http_handler.py 820） |
+
+### 2026-11-13 刷新已确认变化（0608a41a07 → df8b3b498e，97 commit，写给本次派活）
+
+| 变化 | 出处 | 影响篇目 |
+|---|---|---|
+| **#51000 workspace 包搬家**：`litellm-rust/` → `litellm/rust/`（76 crate 全数挪入 litellm 包，路径前缀改写即可）；`ui/` → `litellm/ui/`。注意 `x-litellm-rust-peer` 是 HTTP 头名不是路径，不改 | db6dfb6bb6 | 全库 9 篇正文 |
+| **litellm_cli 澄清**：repo 无 `litellm_cli/` 目录。`.github/packaging/cli_package.py :: PACKAGE_NAME` 把 `litellm/cli`（`PACKAGE_DIR`）打包成独立发行包 `litellm_cli`，pyproject entry points（`litellm`/`lite`/`litellm-proxy`）写 `litellm_cli.main:*` 指的是该发行包的导入路径 | .github/packaging/cli_package.py | 02-repo-layout |
+| **dynamic_rate_limiter_v3 借用机制**（本轮最大行为变化）：团队模型 TPM/RPM 限额可从其他团队借空闲容量（`team_model_limit_borrows_idle_capacity_from_other_teams`，#51328）；`team_model_limit_max_borrow_multiple` 封顶借多远（#51359）；priority class 份额在活跃团队间均分（新文件 `litellm/proxy/hooks/priority_class_share.py`，#51366）；flexible 团队在偏好模型饱和时被引导到定价相近的备选模型（`AlternateGrant`/`alternate_grant_for`/`alternates_for`/`_priced_within`，#51350）；prometheus per team+model 的 share/borrowed/throttle 指标（#51417）；模型饱和后 borrower 归还全额 share（#51415）；router fallbacks、嵌套调用、WebSocket turns、超大 prompt 也受借用约束（#51367）。`parallel_request_limiter_v3.py` 新符号：`BorrowingTeamModelLimits`（`share`/`borrow_ceiling`）、`inherited_team_model_limit`、`team_model_limit_max_borrow_multiple()`、`borrowing_team_model_limits()`、`dynamic_rate_limiter_covers()`、request stash 重构（`claim_request_stash_for_data`/`request_stash_for_callback`）。dynamic_rate_limiter_v3.py 新符号：`AlternateGrant`、`ModelPreference`、`SteeredModel`、`_BorrowingTeamShare`（`enforced`）、`_SettlementMetadata`/`_SettlementLoggingObject`、`_team_model_settlement`、`_tightest_team_share`、`_priority_class`/`_team_class_share` | #51328/#51359/#51366/#51350/#51417/#51415/#51367 | 11-rate-limiter（大改）、03-pre-call、02-auth（fallback_rate_limit.py +15） |
+| **auth 读 body 前先拒**：`user_api_key_auth.py :: _reject_from_headers_before_reading_body`（blocked/over-limit key 凭头信息先拒，不再读请求体，#51428）；JWT end-user budget rate limits 执行（#51405）；`_team_obj_from_token` 返回类型改 `LiteLLM_TeamRebuiltFromToken` | #51428/#51405 | 02-auth 两篇 |
+| **token_counter 计入工具变更**：mid-conversation tool 变更计入 token 数（`_tool_change_tokens`，#51447）；Anthropic server tool history 计入（#51334）；新函数 `_is_text_block`/`_has_only_text_content`/`has_only_text_content` | #51447/#51334 | 01-endpoint、07-streaming、01-proxy-entry |
+| **otel 失败用量与 GenAI 模型**：chat 失败 span 区分 missing usage 与 prompt 估算（`opentelemetry.py :: _set_failure_usage_attributes`，#51443）；experimental GenAI traces 报 provider model（`otel/model/spans.py :: _semconv_response_model`，#51430） | #51443/#51430 | 08 两篇 |
+| **anthropic messages native streaming**：signed empty thinking blocks 在 rust 侧保留（#51349）；重试时 rust 丢弃 null thinking signature（#51461）；rust stream transport error 命名 deployment（#51358）；idle Messages streams 期望走 rust（#51364）；`rust_bridge/host/routes/messages.py` 只把 anthropic metadata `user_id` 交给 rust（#51355） | #51349/#51461/#51358/#51364/#51355 | 10-streaming、07-streaming |
+| **rust registry 读视频/计费单元成本**：`router_rust/surface/registry.py`、`router_rust/surface/model_info.py` 读 `output_cost_per_video`（#51433）与 `output_cost_per_billable_unit`（#51365） | #51433/#51365 | 13-rust-router-core、04-router-decision、04-router-functions |
 
 ## 更新流程（下次执行 source-doc-refresh 时）
 

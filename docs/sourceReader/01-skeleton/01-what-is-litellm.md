@@ -11,14 +11,14 @@ LiteLLM 用一套统一接口，把「调用 100+ 家 LLM API」和「把 LLM AP
 形态二：Gateway（服务）      任意 HTTP 客户端 ──▶ litellm-proxy (FastAPI) ──▶ 内部仍调用 SDK ──▶ LLM API
 ```
 
-两种形态是包含关系而非并列关系：Gateway 在每个请求里调用 SDK 完成真正的 LLM 调用。仓库根目录的 `ARCHITECTURE.md` 的「How It Works」一节就是这张关系图，并写明「The AI Gateway adds authentication, rate limiting, budgets, and routing on top of the SDK」。另外项目还有第三个形态：`litellm-rust/` 下的 Rust 核心在 `LITELLM_RUST_FIRST` 开启时可以直接承接公网流量，细节见下文「Rust 路由核心」。
+两种形态是包含关系而非并列关系：Gateway 在每个请求里调用 SDK 完成真正的 LLM 调用（旧版仓库根的 `ARCHITECTURE.md` 曾用「The AI Gateway adds authentication, rate limiting, budgets, and routing on top of the SDK」概括这张关系图，该文件已在 #50992 随根级 docs 收敛一并删除）。另外项目还有第三个形态：`litellm/rust/` 下的 Rust 核心在 `LITELLM_RUST_FIRST` 开启时可以直接承接公网流量，细节见下文「Rust 路由核心」。
 
 ## 包元数据
 
 | 项 | 值 | 源码位置 |
 |---|---|---|
 | 包名 | `litellm` | `pyproject.toml` 顶部 |
-| 版本 | `1.110.0` | `pyproject.toml`，运行时由 `litellm/_version.py :: _installed_version() :: +0` 读已安装发行版元数据 |
+| 版本 | `1.111.0` | `pyproject.toml`，运行时由 `litellm/_version.py :: _installed_version() :: +0` 读已安装发行版元数据 |
 | 一句话描述 | "Library to easily interface with LLM API providers" | `pyproject.toml` |
 
 ## SDK 形态能做什么
@@ -44,7 +44,7 @@ resp = litellm.completion(model="anthropic/claude-sonnet-4-5", messages=[{"role"
 
 ## Gateway 形态能做什么
 
-Gateway 是 `litellm/proxy/` 下的 FastAPI 应用，app 对象在 `litellm/proxy/proxy_server.py :: app :: +0` 创建（`app = FastAPI(...)`），全部端点注册在同一个文件里（实测 23099 行）。它在 SDK 之上叠加了企业能力：
+Gateway 是 `litellm/proxy/` 下的 FastAPI 应用，app 对象在 `litellm/proxy/proxy_server.py :: app :: +0` 创建（`app = FastAPI(...)`），全部端点注册在同一个文件里（实测 23033 行）。它在 SDK 之上叠加了企业能力：
 
 | 能力 | 说明 | 主要源码位置 |
 |---|---|---|
@@ -63,10 +63,10 @@ Gateway 是 `litellm/proxy/` 下的 FastAPI 应用，app 对象在 `litellm/prox
 | 入口 | 端口 | 暴露什么 | 源码位置 |
 |---|---|---|---|
 | 传统 `litellm --config ...` | 4000 | 全部端点（数据面 + 管理面） | `litellm/proxy/proxy_cli.py :: run_server() :: +0` |
-| `gateway.main:app` | 4000 | 只裁剪保留 LLM 数据面路由 | `gateway/main.py` 模块 docstring |
-| `backend.main:app` | 4001 | 只保留管理/后台路由 | `backend/main.py` 模块 docstring |
+| `gateway.main:app` | 4000 | 只裁剪保留 LLM 数据面路由 | `litellm/runtime/gateway/main.py` 模块 docstring |
+| `backend.main:app` | 4001 | 只保留管理/后台路由 | `litellm/runtime/backend/main.py` 模块 docstring |
 
-`gateway/main.py` 与 `backend/main.py` 的模块 docstring 都写明：复用 `litellm.proxy.proxy_server` 的 app，对路由表做「additive（纯增量）」裁剪，不修改任何既有模块。容器化部署还有 `gateway/launch.py`，它在 uvicorn worker 起来之前组装 `DATABASE_URL` 并先拉起容器内 PgBouncer，再把 uvicorn 交给同一个 `gateway.main:app`。
+`litellm/runtime/gateway/main.py` 与 `litellm/runtime/backend/main.py` 的模块 docstring 都写明：复用 `litellm.proxy.proxy_server` 的 app，对路由表做「additive（纯增量）」裁剪，不修改任何既有模块。容器化部署还有 `litellm/runtime/gateway/launch.py`，它在 uvicorn worker 起来之前组装 `DATABASE_URL` 并先拉起容器内 PgBouncer，再把 uvicorn 交给同一个 `gateway.main:app`。
 
 ## Rust 路由核心
 
@@ -74,7 +74,7 @@ Gateway 是 `litellm/proxy/` 下的 FastAPI 应用，app 对象在 `litellm/prox
 
 - **Router 是纯门面**：`litellm/router.py`（实测 506 行）里的 `litellm/router.py :: Router :: __init__() :: +0` 只做一件事，`self._attach(make_core(build_router_config(...), python_host))`；成员读写经元类转发给 `_core`，子类化会被 `__init_subclass__` 直接 `raise TypeError` 拒绝，扩展只能走 `register_plugin()` / `apply()` / `observe()` 三个入口。对外的端点名清单收敛在 `litellm/router_rust/invoke/endpoints.py :: endpoint_names() :: +0`。
 - **核心只有一个**：`litellm/router_core.py :: make_core() :: +0`（全文件 55 行）无条件 `RustCore.build(config, host)`，没有任何「选 Python 核心还是 Rust 核心」的分支。旧文档描述的 `router_python_core.py`（Python 版路由核心，约 1.8 万行）已被删除，双核 `Route.ROUTER` 时代随之终结。
-- **RustCore 是 pyo3 句柄**：`litellm/router_rust/core.py :: RustCore :: +0` 通过 `litellm/rust_bridge/`（绑定桩在 `litellm/rust_bridge/_native.pyi`）指向 `litellm-rust/crates/router-core`，在进程内拥有选路、重试、fallback、冷却与用量统计。Rust 侧规模实测约 22 万行、76 个 crate 目录。
+- **RustCore 是 pyo3 句柄**：`litellm/router_rust/core.py :: RustCore :: +0` 通过 `litellm/rust_bridge/`（绑定桩在 `litellm/rust_bridge/_native.pyi`）指向 `litellm/rust/crates/router-core`（Rust workspace 已从根级 `litellm-rust/` 挪进包内，#51000），在进程内拥有选路、重试、fallback、冷却与用量统计。Rust 侧规模实测约 22 万行、76 个 crate 目录。
 - **核心不直接碰 litellm**：provider 调用、退避 sleep、回调注册、进程级缓存都经 `litellm/router_python_host.py :: PythonHost :: +0` 的 `.invoke` 回 litellm 执行，其 docstring 写明「The core never touches `litellm.*` directly」。有状态负载均衡与 pre-routing 仍留在 Python 宿主 step，见 `litellm/router_rust/steps/`。
 - **执行层由 catalog 决定**：`chat_completions` 端点是 PYTHON_ONLY 执行（Rust 只做选路）；anthropic messages 是 RUST_REQUIRED，`litellm/messages/dispatch.py :: _rust_only_refusal() :: +0` 会在缺 Rust 路径时抛 `UnsupportedParamsError`。两条路由走同一个 Router。
 - **`LITELLM_RUST_FIRST` 是独立开关**：`litellm/proxy/rust_forward/mode.py :: SWITCH_ENV :: +0` 定义该环境变量，独立于 `LITELLM_RUST`（`litellm/rust_bridge/configuration.py :: ENV_NAME :: +0`，只决定 SDK 内是否走 Rust 路径），两者互不启用。开启后由 `litellm/proxy/rust_forward/supervisor/__init__.py :: supervise() :: +0` 起一个 Rust 网关进程占公网端口，Python 退到 loopback；Rust 起不来则回退纯 Python。gunicorn 场景的私有监听走 `litellm/proxy/server_listener.py :: PrivateListener :: +0`。这个模式不替代上表三种进程入口，它是同一入口下的部署形态开关。
@@ -90,7 +90,7 @@ flowchart LR
         PH --> SDK["main.py :: acompletion()"]
         SDK --> BASE["llms/custom_httpx/llm_http_handler.py<br/>BaseLLMHTTPHandler.async_completion()"]
     end
-    subgraph litellm-rust workspace
+    subgraph litellm/rust workspace
         RSC["crates/router-core<br/>选路/重试/fallback/冷却"]
     end
     RS <-.->|pyo3 桥 litellm/rust_bridge/| RSC

@@ -4,7 +4,7 @@
 
 ## 模块职责表
 
-按一次请求经过的先后顺序排列（职责细节在后三层展开，这里先建立「谁负责什么」的心智地图）。基线 `0608a41a07` 起 Python 选路核心（`router_python_core.py` 整文件）已被删除，选路、重试、fallback、冷却全部下沉到 Rust 路由核心（`litellm/router_rust/core.py :: RustCore`），本表按新架构列：
+按一次请求经过的先后顺序排列（职责细节在后三层展开，这里先建立「谁负责什么」的心智地图）。基线 `df8b3b498e` 起 Python 选路核心（`router_python_core.py` 整文件）已被删除，选路、重试、fallback、冷却全部下沉到 Rust 路由核心（`litellm/router_rust/core.py :: RustCore`），本表按新架构列：
 
 | 模块 | 文件位置 | 职责 | 输入 | 输出 |
 |---|---|---|---|---|
@@ -15,13 +15,13 @@
 | 代理层路由 | `litellm/proxy/route_llm_request.py :: route_request` | 解析 model group、通配模型、per-request 路由设置，返回 provider 协程 | data + Router | 一个未 await 的 provider 协程 |
 | Router 门面 | `litellm/router.py` | 纯门面：`__init__`/`from_config` 仅 `_attach(make_core(...))`，成员读写转发 `_core`；禁子类化，扩展走 `register_plugin`/`apply`/`observe` | data + model group | 委托给 Rust 核心 |
 | 核心装配 | `litellm/router_core.py :: make_core` | 无条件 `RustCore.build(config, host)`，选定 Rust 核心 | RouterConfig + `PythonHost` | `RouterCore`（= `RustCore`） |
-| Rust 路由核心 | `litellm/router_rust/core.py :: RustCore` | pyo3 句柄（经 `rust_bridge/_native` 绑定 litellm-rust/crates/router-core）：进程内拥有选路、重试、fallback、cooldown、用量 | data + model group | 单个 deployment 的调用结果 |
+| Rust 路由核心 | `litellm/router_rust/core.py :: RustCore` | pyo3 句柄（经 `rust_bridge/_native` 绑定 `litellm/rust/crates/router-core`）：进程内拥有选路、重试、fallback、cooldown、用量 | data + model group | 单个 deployment 的调用结果 |
 | 宿主回桥 | `litellm/router_python_host.py :: PythonHost` | 核心唯一的外出通道：`.invoke(op)` 查 `litellm.<op>` 并回 litellm 执行；另提供 sleep、routing_cache、回调注册 | op 名 + kwargs | `litellm.*` 的函数引用 |
 | 选路步 | `litellm/router_rust/steps/selection.py :: StrategySelectors` | 按路由策略（least-busy/加权随机等）挑一个 deployment | 候选 deployments | 单个 deployment |
 | 预路由步 | `litellm/router_rust/steps/prerouting.py :: PreRouter`、`PreRoutingStrategies` | 有状态 LB 与 pre-routing 的宿主步（`as_output_cap`、`stamped_client_ceiling`） | 请求 + 候选 | 裁剪后的候选集 |
 | 执行层门面 | `litellm/router_rust/invoke/endpoints.py :: RustEndpoints`、`endpoint_names` | 端点名清单与调用驱动（`acompletion` → `_routed_acompletion` → `RustCore._drive`） | op 名 | 逐 deployment 调用计划 |
 | 执行 catalog | `litellm/rust_bridge/catalog.py` | 决定每条路由的执行层：`chat_completions` 是 PYTHON_ONLY，anthropic messages 是 RUST_REQUIRED | 路由上下文 | `Rollout` |
-| 原生绑定层 | `litellm/rust_bridge/`（`_native.pyi`、`bindings.py`、`chat_completions/`、`messages/`） | `_native` 是编译后的 Rust crate 绑定（litellm-rust），`NativeBinding` 解析原生属性，chat/messages 提供原生完成入口 | 原生调用 | `ModelResponse` 等 |
+| 原生绑定层 | `litellm/rust_bridge/`（`_native.pyi`、`bindings.py`、`chat_completions/`、`messages/`） | `_native` 是编译后的 Rust crate 绑定（对应 `litellm/rust/` workspace），`NativeBinding` 解析原生属性，chat/messages 提供原生完成入口 | 原生调用 | `ModelResponse` 等 |
 | Rust store | `litellm/redis/`（`stores/rate_limits :: RateLimitStore`、`stores/spend_counters :: SpendCounterStore`、`stores/router_usage :: RouterUsageStore`、`stores/auth_cache :: AuthCacheStore`、`store_settings :: RedisStoreSettings`） | Rust 后端的 Redis store 家族：限流计数、spend counters、路由冷却与用量、auth cache | 路由/限流事件 | 计数/缓存写读 |
 | SDK 入口 | `litellm/main.py :: acompletion` | 参数规范化、provider 解析、建 `Logging`、分发执行（openai 走官方 SDK） | OpenAI 风格参数 | `ModelResponse` 或异步生成器 |
 | Provider 解析 | `litellm/litellm_core_utils/get_llm_provider_logic.py :: get_llm_provider` | 把 model 字符串解析成 provider + model | model 字符串 | `(model, provider, api_key, api_base)` |
@@ -62,7 +62,7 @@ graph TD
     ROUTED --> RT["router.py Router 门面"]
     RT --> MAKE["router_core.py<br/>make_core"]
     MAKE --> RUSTCORE["router_rust/core.py<br/>RustCore"]
-    RUSTCORE --> NATIVE["rust_bridge/_native<br/>litellm-rust crate"]
+    RUSTCORE --> NATIVE["rust_bridge/_native<br/>litellm/rust crate"]
     RUSTCORE --> HOST["router_python_host.py<br/>PythonHost"]
     RUSTCORE --> STEP["router_rust/steps/<br/>selection + prerouting"]
     RUSTCORE --> INVOKE["router_rust/invoke/<br/>endpoints.acompletion"]

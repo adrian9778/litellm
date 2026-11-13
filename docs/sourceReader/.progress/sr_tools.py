@@ -17,8 +17,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-PROD_ROOTS: tuple[str, ...] = ("litellm", "gateway", "backend", "enterprise", "litellm_cli", "litellm-proxy-extras")
-FALLBACK_ROOTS: tuple[str, ...] = ("tests", "scripts", "ci_cd", "db_scripts", "migrations", "ui/litellm-dashboard")
+PROD_ROOTS: tuple[str, ...] = ("litellm",)
+FALLBACK_ROOTS: tuple[str, ...] = ("tests", ".github")
 SKIP_DIRS: frozenset[str] = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv", ".zcode", "dist", "build", ".mypy_cache", ".pytest_cache"})
 
 DEF_RE = re.compile(r"^[ \t]*(?:class|def|async def)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)

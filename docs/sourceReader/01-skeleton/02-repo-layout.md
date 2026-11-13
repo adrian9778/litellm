@@ -4,34 +4,36 @@
 
 ## 顶层目录
 
-仓库根目录按「核心包 / 服务入口 / 基础设施 / 工程配套」分成四组。规模实测（2026-11-12，基准 `0608a41a07`）：`litellm/` 包含 3169 个 Python 文件、约 108 万行；`litellm-rust/` 包含 76 个 crate 目录、1039 个 `.rs` 文件、约 22 万行。
+#51000（2026-11-12）把几乎所有工作区包都收进了 `litellm/` 包内，仓库根目录收敛到「一个包 + 测试 + 文档 + 配置」。规模实测（2026-11-13，基准 `df8b3b498e`）：`litellm/` 包含 3417 个 Python 文件、约 112 万行（含包内的 `enterprise/`、`proxy-extras/`）；`litellm/rust/` 包含 76 个 crate 目录、1039 个 `.rs` 文件、约 22 万行（#51000 从根级 `litellm-rust/` 整体挪入，规模不变）。
 
 ```text
-litellm/                    # Python 包本体：SDK + Router 门面 + proxy 网关
+litellm/                    # Python 包本体：SDK + Router 门面 + proxy 网关，现在几乎一切都在包内
 ├── router_rust/            #   Rust 路由核心的 Python 侧（core/invoke/steps/surface）
 ├── router_python_host.py   #   PythonHost：Rust 核心的外联宿主
 ├── rust_bridge/            #   Python↔Rust 桥接（pyo3 绑定桩 _native.pyi）
+├── rust/                   #   Rust Cargo workspace（76 个 crate，#51000 从根级 litellm-rust/ 挪入）
+│   └── crates/             #     router-core、gateway-*、inference-*、redis-* 等
 ├── redis/                  #   Rust 后端 Redis store 家族（限流/spend/冷却/用量）
+├── runtime/                #   进程入口（原根级目录，#51000 挪入）：gateway/、backend/、migrations/
+├── cli/                    #   litellm / lite / litellm-proxy 命令实现（打包成独立发行包 litellm_cli）
+├── ui/                     #   Dashboard 前端（litellm-dashboard，Node/React，原根级 ui/）
+├── deploy/                 #   compose/、docker/、helm/、render/、terraform/（原根级部署物）
+├── enterprise/             #   商业版扩展（原根级 enterprise/，单独发布）
+├── proxy-extras/           #   Proxy 附带物独立小包（Prisma 迁移工具链，原根级 litellm-proxy-extras/）
+├── scripts/                #   lint 门禁与 CI 辅助脚本（含 ci_cd/、db/，原根级 scripts/ + ci_cd/）
+├── skills/                 #   agent skill 定义（原根级 skills/）
+├── schema.prisma           #   数据库 schema 唯一来源（原根级；proxy 内还有一份同步副本）
 ├── litellm_core_utils/     #   日志管线、model 字符串解析、异常映射、流式聚合
 ├── llms/                   #   100+ provider 适配
 └── proxy/                  #   AI Gateway：FastAPI 应用 + 全部端点
     ├── rust_forward/       #     LITELLM_RUST_FIRST 部署形态（supervisor/peer/server）
     └── server_listener.py  #     gunicorn 私有监听（PrivateListener）
-litellm-rust/               # 独立 Cargo workspace（76 个 crate）
-├── crates/                 #   router-core、gateway-*、inference-*、redis-* 等
-└── docs/                   #   Rust 侧 ADR
-gateway/                    # 数据面入口：main.py + launch.py + routes/
-backend/                    # 管理面入口：main.py + routes/
-litellm_cli/                # litellm / lite / litellm-proxy 命令入口
-ui/                         # Dashboard 前端（litellm-dashboard，Node/React）
-enterprise/                 # 商业版扩展（enterprise_hooks/、litellm_enterprise/）
-litellm-proxy-extras/       # Proxy 附带物独立小包（Prisma 迁移工具链）
-docs/                       # docs/adrs/ 决策记录 + docs/sourceReader/ 本套导读
+docs/                       # 只剩 sourceReader/ 本套导读（docs/adrs/ 与 ARCHITECTURE.md 已在 #50992 删除）
 tests/                      # unit/、e2e/、code_coverage_tests/
-scripts/、ci_cd/            # lint 门禁与 CI 辅助脚本
-schema.prisma               # 数据库 schema 唯一来源（proxy 运行时引用）
-migrations/、db_scripts/    # 数据库迁移脚本
 model_prices_and_context_window.json   # 全量模型价目表（成本计算数据源）
+policy_templates.json、provider_endpoints_support.json   # guardrail 策略模板、provider 端点支持矩阵
+pyproject.toml、uv.lock     # 构建配置（console entry points 指向打包后的 litellm_cli.main）
+.github/                    # CI、linters（ruff-strict/ruff-tests.toml 挪入 linters/）、CONTRIBUTING.md
 ```
 
 ### 核心包
@@ -40,42 +42,42 @@ model_prices_and_context_window.json   # 全量模型价目表（成本计算数
 |---|---|---|
 | `litellm/` | Python 包本体，SDK 全部逻辑 | `main.py`、`router.py`、`router_rust/`、`litellm_core_utils/`、`llms/`、`caching/`、`redis/`、`proxy/` |
 | `litellm/proxy/`（在包内） | AI Gateway 的 FastAPI 应用 | `proxy_server.py`、`auth/`、`hooks/`、`db/`、`rust_forward/`、`schema.prisma` |
-| `litellm-rust/` | 独立 Rust workspace，核心逻辑下沉 | `crates/`（76 个 crate）、自己的 `docs/` |
+| `litellm/rust/`（在包内） | Rust workspace，核心逻辑下沉 | `crates/`（76 个 crate） |
 | `litellm/rust_bridge/`（在包内） | Python↔Rust 桥接层 | `bindings.py`、`_native.pyi`、`host/`、按端点族的 `chat_completions/`、`messages/`、`responses/` 等 |
-| `enterprise/` | 商业版扩展（单独发布） | `enterprise_hooks/`、`litellm_enterprise/` |
-| `litellm-proxy-extras/` | Proxy 附带物，独立小包 | `litellm_proxy_extras/` 下的 Prisma 迁移工具链与迁移脚本 |
+| `litellm/enterprise/`（在包内） | 商业版扩展（单独发布） | `enterprise_hooks/`、`litellm_enterprise/` |
+| `litellm/proxy-extras/`（在包内） | Proxy 附带物，独立小包 | `litellm_proxy_extras/` 下的 Prisma 迁移工具链与迁移脚本 |
 
 ### 服务入口
 
 | 目录/文件 | 职责 |
 |---|---|
-| `gateway/` | 数据面入口：复用 proxy app 只保留 LLM 转发路由；`gateway/launch.py` 在 worker 起来前组装 `DATABASE_URL` 并先拉起容器内 PgBouncer |
-| `backend/` | 管理面入口：复用 proxy app，只保留管理后台路由 |
-| `litellm_cli/` | `litellm`、`lite`、`litellm-proxy` 三个命令的 console entry point（`litellm_cli/main.py`） |
-| `ui/` | Dashboard 前端（`ui/litellm-dashboard/`，Node/React 项目） |
+| `litellm/runtime/gateway/` | 数据面入口：复用 proxy app 只保留 LLM 转发路由；`litellm/runtime/gateway/launch.py` 在 worker 起来前组装 `DATABASE_URL` 并先拉起容器内 PgBouncer |
+| `litellm/runtime/backend/` | 管理面入口：复用 proxy app，只保留管理后台路由 |
+| `litellm/cli/` | `litellm`、`lite`、`litellm-proxy` 三个命令的实现。repo 里没有 `litellm_cli/` 目录：发布时 `.github/packaging/cli_package.py` 把 `litellm/cli` 打包成独立发行包 `litellm_cli`，pyproject 的 entry points 写 `litellm_cli.main:*` 指的是该发行包 |
+| `litellm/ui/` | Dashboard 前端（`litellm/ui/litellm-dashboard/`，Node/React 项目） |
 
 ### 基础设施与部署
 
 | 目录/文件 | 职责 |
 |---|---|
-| `docker/`、`Dockerfile`、`docker-compose.yml`、`docker-compose.liteadmin.yml` | 容器构建与编排 |
-| `helm/`、`terraform/`、`render.yaml` | K8s/Terraform/Render 部署 |
-| `schema.prisma` | 数据库 schema 唯一来源（根目录，`litellm/proxy/schema.prisma` 与其同步） |
-| `migrations/`、`db_scripts/` | 数据库迁移脚本 |
+| `litellm/deploy/` | 容器与部署物（原根级散落文件全部收拢）：`compose/`、`docker/`、`helm/`、`render/`、`terraform/` |
+| `litellm/schema.prisma` | 数据库 schema 唯一来源（`litellm/proxy/schema.prisma` 与其同步） |
+| `litellm/runtime/migrations/` | 数据库迁移脚本 |
 | `model_prices_and_context_window.json` | 全量模型价目表/上下文窗口表（成本计算的数据源） |
-| `prometheus.yml`、`policy_templates.json`、`provider_endpoints_support.json` | 监控、guardrail 策略模板、provider 端点支持矩阵等数据文件 |
+| `policy_templates.json`、`provider_endpoints_support.json` | guardrail 策略模板、provider 端点支持矩阵等数据文件（根级仅剩这两个 + 价目表） |
 
 ### 工程配套
 
 | 目录/文件 | 职责 |
 |---|---|
-| `docs/` | 架构决策记录（`docs/adrs/`）与本套导读（`docs/sourceReader/`） |
+| `docs/` | 本套导读（`docs/sourceReader/`）。`docs/adrs/` 与 `ARCHITECTURE.md` 已在 #50992 删除，架构决策现在看 git history 与本库 |
 | `tests/` | 测试（`unit/`、`e2e/`、`code_coverage_tests/` 等，入口约定见 `tests/AGENTS.md`） |
-| `scripts/`、`ci_cd/` | lint 门禁脚本（`check_type_discipline.py`、`check_test_quality.py` 等）与 CI 辅助 |
-| `skills/`、`packaging/`、`.devcontainer/`、`vscode-extension/` | agent skill 定义、发布打包、开发容器、IDE 扩展 |
+| `litellm/scripts/` | lint 门禁脚本（`check_type_discipline.py`、`check_test_quality.py` 等）与 CI 辅助（含原根级 `ci_cd/`、`db_scripts/`） |
+| `litellm/skills/`、`litellm/packaging/` | agent skill 定义、homebrew/core 发行打包 |
+| `.github/packaging/` | PyPI 打包脚本：`cli_package.py`（把 `litellm/cli` 打成 `litellm_cli` 发行包）与 `build_backend.py` |
 | `Makefile` | `make check`、`make lint` 等开发命令 |
-| `pyproject.toml`、`uv.lock`、`ruff.toml`、`ruff-strict.toml`、`ruff-tests.toml`、`pyrightconfig.json` | 构建与质量工具配置 |
-| `AGENTS.md`、`ARCHITECTURE.md` | 贡献路由 hub 与架构总览 |
+| `pyproject.toml`、`uv.lock` | 构建与依赖配置；lint 配置挪到 `.github/linters/`（`ruff-strict.toml`、`ruff-tests.toml`），根级 `ruff.toml`、`pyrightconfig.json` 已删除（pyright 配置只剩 `tests/pyrightconfig.json`、`tests/typing/pyrightconfig.json`） |
+| `AGENTS.md` | 贡献路由 hub |
 
 ## `litellm/` 包内地图（按功能分组）
 
@@ -145,7 +147,7 @@ model_prices_and_context_window.json   # 全量模型价目表（成本计算数
 | `stores/spend_counters/`、`stores/auth_cache/` | spend 计数与 auth 缓存 store |
 | `stores/router_cooldowns/`、`stores/router_usage/`、`stores/sensitive_route_pins/` | 路由冷却、用量、敏感路由钉扎 store |
 
-v3 限流器、spend counters、路由冷却与用量、auth cache 都已接入这套 store（对应的 Rust 实现在 `litellm-rust/crates/` 的 `redis-*` crate 族）。
+v3 限流器、spend counters、路由冷却与用量、auth cache 都已接入这套 store（对应的 Rust 实现在 `litellm/rust/crates/` 的 `redis-*` crate 族）。
 
 ## `litellm/proxy/` 包内地图
 
@@ -173,7 +175,7 @@ v3 限流器、spend counters、路由冷却与用量、auth cache 都已接入�
 | 想找什么 | 去哪里 |
 |---|---|
 | 某端点的 HTTP 处理函数 | `litellm/proxy/proxy_server.py` 搜路径字符串 |
-| 路由决策（选部署/重试/冷却） | `litellm-rust/crates/router-core`（决策本体）与 `litellm/router_rust/`（Python 侧句柄与 step） |
+| 路由决策（选部署/重试/冷却） | `litellm/rust/crates/router-core`（决策本体）与 `litellm/router_rust/`（Python 侧句柄与 step） |
 | Router 的端点名与执行计划 | `litellm/router_rust/invoke/endpoints.py` |
 | 某模型参数如何翻译 | `litellm/llms/<provider>/<模态>/transformation.py` |
 | model 字符串怎么变成 provider | `litellm/litellm_core_utils/get_llm_provider_logic.py` |
