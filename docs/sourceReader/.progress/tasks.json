@@ -35,7 +35,12 @@
       "id": "incremental-2026-11-13",
       "desc": "workspace 包搬家刷新：litellm-rust->litellm/rust 等路径修正；11-rate-limiter 增借用机制；02-auth-pipeline 增先头拒绝；01-endpoint 补 token_counter 口径；基线 df8b3b498e；verify 全库 0 硬伤",
       "date": "2026-11-13"
+    },
+    {
+      "id": "fork-sync-2026-11-13",
+      "desc": "main fast-forward 到上游最新 89632ca1be 并推 origin；文档分支 rebase 到最新上游；补 #51519/#51525 行为覆盖；推送 origin",
+      "date": "2026-11-13"
     }
   ],
-  "next_check": "git rev-list --count df8b3b498e..HEAD 超过 50 或出现模块拆分/搬家合并时重跑 source-doc-refresh"
+  "next_check": "git rev-list --count 89632ca1be..HEAD 超过 50 或出现模块拆分/搬家合并时重跑 source-doc-refresh"
 }

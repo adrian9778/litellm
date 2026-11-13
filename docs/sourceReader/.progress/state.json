@@ -1,17 +1,18 @@
 {
   "library": "docs/sourceReader",
-  "baseline_commit": "df8b3b498e",
-  "baseline_subject": "upstream/main @ df8b3b498e (2026-11-13; +97 commits over 0608a41a07)",
+  "baseline_commit": "89632ca1be",
+  "baseline_subject": "upstream/main @ 89632ca1be (2026-11-13; +110 commits over 3f4dc93b40)",
   "generated": "2026-11-12",
   "refresh": {
     "date": "2026-11-13",
-    "action": "incremental: workspace-package move + behavior changes",
-    "upstream_commits_rebased": 97,
-    "arch_change": "litellm-rust->litellm/rust, ui/scripts/deploy under litellm, ARCHITECTURE.md deleted",
+    "action": "fork sync + incremental refresh",
+    "upstream_commits_rebased": 110,
+    "arch_change": "litellm-rust->litellm/rust, native redis stores for router usage/health/pins, RedisBatch removed",
     "covered": [
-      "rate-limiter borrow",
-      "auth pre-body-reject #51428",
-      "token_counter tool-change #51447"
+      "rate-limiter saturation-from-redis #51519",
+      "pre-body reject logging #51525",
+      "customer-hierarchy budgets #51489",
+      "annual budget reset #51508"
     ]
   },
   "layers": {
@@ -24,5 +25,5 @@
   "spec": ".progress/UPDATE-SPEC.md",
   "tools": ".progress/sr_tools.py",
   "verification": "VERIFY.md",
-  "refresh_2026_11_13": "增量刷新：workspace 包搬家路径修正（5 篇 12 处 litellm-rust->litellm/rust）；11-rate-limiter 增 §8b 借用机制；02-auth-pipeline 增先头拒绝；01-endpoint 补 token_counter 计数口径；verify 全库 0 硬伤"
+  "refresh_2026_11_13": "fork 同步 + 增量刷新：main ff 到 89632ca1be；文档分支 rebase 到最新上游；补 #51519（饱和值走 Redis）与 #51525（先头拒绝留日志）"
 }
