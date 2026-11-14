@@ -1,184 +1,221 @@
-# 端点与请求解析
+# 端点与请求解析：HTTP 报文如何变成带元数据的 data dict
 
-> 所属层级：第三层（主链路拆解） | 拆解对象：第二层场景的跳 1-3
+> 所属层级：第三层（主链路逐跳拆解） | 拆解对象：第二层场景的跳 1、跳 3
+> 本篇基准提交：`411b64dc7a`（工作区当前 HEAD）
 
-## 本篇回答的问题
+一句话定位：这一跳把 `POST /v1/chat/completions` 的原始 HTTP 报文，经过 FastAPI 路由匹配、函数体外的鉴权依赖、body 解析、metadata 注入四道工序，变成一个干净的 `data` dict，并把它交给请求处理骨架。全程不碰模型、不发上游请求。
 
-HTTP 报文到达 4000 端口之后、鉴权完成之后，body 是怎么变成带元数据的 `data` dict 的？中间有哪些防御性处理？
+术语约定（首现已解释）：`Deployment`（一个可调用的模型实例，含 `model_name` 与 `litellm_params`）、`route_type`（同一处理骨架区分后续派发到哪个 SDK 方法的字符串，本场景是 `"acompletion"`）、`UserAPIKeyAuth`（鉴权产物对象，携带 key 身份与权限）、`metadata`（网关在请求体里注入的归属信息区）。
 
-## 调用链
+## 本跳在主链中的位置
 
-主链入口符号（spec 事实 8 实测于 `0608a41a07`）：
+主链 13 跳里，本篇覆盖跳 1（HTTP 进入、路由匹配）与跳 3（读 body、注入 metadata）。跳 2（鉴权）物理上发生在跳 1 与跳 3 之间，但它由 `Depends` 触发、独立成篇，见 02 篇。本跳的上游是 curl/TCP 报文，下游交给 `base_process_llm_request`（03 篇从它的内部继续拆）。
 
 ```mermaid
 sequenceDiagram
-    participant Client as 客户端
-    participant CC as proxy_server.py :: chat_completion
-    participant Auth as user_api_key_auth.py :: user_api_key_auth
-    participant Body as http_parsing_utils.py :: read_request_body
-    participant Base as common_request_processing.py :: base_process_llm_request
+    autonumber
+    participant C as 客户端
+    participant FW as FastAPI 路由层
+    participant AU as user_api_key_auth
+    participant CC as chat_completion
+    participant RB as read_request_body
+    participant BP as ProxyBaseLLMRequestProcessing
 
-    Client->>CC: POST /v1/chat/completions
-    CC->>Auth: Depends(user_api_key_auth)
-    Auth-->>CC: UserAPIKeyAuth
-    CC->>Body: +31 读 body
-    Body-->>CC: data dict
-    CC->>CC: +33 至 +47 metadata 注入
-    CC->>Base: +49 构造后调用，route_type="acompletion"
-    Base-->>Client: 响应或 ProxyException
+    C->>FW: POST /v1/chat/completions（headers + body）
+    FW->>FW: 匹配四条路径之一，命中 chat_completion
+    FW->>AU: 解析依赖 Depends(user_api_key_auth)
+    AU-->>FW: UserAPIKeyAuth（鉴权已跑完，见 02 篇）
+    FW->>CC: 调用函数体（签名注入 request/fastapi_response/model/user_api_key_dict）
+    CC->>RB: await read_request_body(request)
+    RB-->>CC: data dict（OpenAI 请求格式）
+    CC->>CC: metadata 归一 + 逐字段注入
+    CC->>BP: ProxyBaseLLMRequestProcessing(data=data)
+    CC->>BP: await base_process_llm_request(route_type="acompletion")
+    Note over BP: 下一跳从 base_process_llm_request 内部继续（03 篇）
 ```
 
-后续主链继续往 `common_request_processing.py :: ProxyBaseLLMRequestProcessing :: base_process_llm_request()`（`+0`，3175 起）走，进鉴权后的 pre-call 处理（第三层第 3 篇）。鉴权本身先于这一切，见下一篇。
+## 跳 1：HTTP 进入与路由匹配
 
-## 端点函数解剖
+锚点：`litellm/proxy/proxy_server.py :: chat_completion() :: +0`
 
-```
-litellm/proxy/proxy_server.py :: chat_completion() :: +0
-```
+FastAPI 按装饰器上的路径匹配请求。这个函数同时挂在四条路径上，四个路径共用一个函数体：
 
-签名只有四个参数：`request`、`fastapi_response`、可选的路径参数 `model`、鉴权产物 `user_api_key_dict`（`Depends(user_api_key_auth)`）。请求体不在签名里，因为 body 要在函数体内手动读（多个路由路径共享此函数，且 body 读取需要容错）。
+| 路径 | 说明 |
+|---|---|
+| `/v1/chat/completions` | 本场景走这条 |
+| `/chat/completions` | 不带版本前缀的等价路径 |
+| `/engines/{model:path}/chat/completions` | Azure 形态，模型在路径里 |
+| `/openai/deployments/{model:path}/chat/completions` | Azure deployments 形态 |
 
-函数体前半段做两件事。
+进：HTTP 报文（headers + body）。出：`Request` 对象、`Response` 对象，以及一个已经解析好的鉴权依赖值。
 
-**第一件事，读 body**（`proxy_server.py :: chat_completion() :: +31`）：
+签名只有四个参数（`chat_completion() :: +0` 到 `+4`）：`request: Request`、`fastapi_response: Response`、可选路径参数 `model: str | None`、鉴权产物 `user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)`。请求体不在签名里，因为 body 要在函数体内手动读：多个路由路径共享此函数，且 body 解析需要容错（非 JSON、超大、非法编码都要各自处理，不能交给框架默认的 JSON 解析）。
+
+**鉴权先于函数体**：装饰器上的 `dependencies=[Depends(user_api_key_auth)]` 与签名里对同一依赖的第二次声明，让 `user_api_key_auth` 在 `chat_completion` 函数体第一行之前就执行完毕。函数体拿到的 `user_api_key_dict` 已经是鉴权结果，不是鉴权协程。这就是主链把鉴权记为独立跳 2 的原因：它的时间点在跳 1 与跳 3 之间，但代码上由 FastAPI 依赖注入驱动。鉴权内部做什么，见 02 篇。
+
+函数体第一件事是声明引用的 proxy 全局（`chat_completion() :: +5`，`general_settings`、`proxy_logging_obj`、`llm_router`、`user_temperature`、`user_request_timeout`、`user_max_tokens`、`user_api_base`）。这些是 proxy 启动时建好的进程级对象，后续 base_process_llm_request 要用它们。
+
+## 跳 3：读 body，注入 metadata
+
+### 3.1 读 body
+
+锚点：`litellm/proxy/proxy_server.py :: chat_completion() :: +31`
 
 ```python
 data: Final = await read_request_body(request=request)
 ```
 
-**第二件事，metadata 注入**（`proxy_server.py :: chat_completion() :: +33 至 +47`）：
+被调方：`litellm/proxy/common_utils/http_parsing_utils.py :: read_request_body() :: +0`。
+
+返回值是一个 `dict`（OpenAI 请求格式，本场景形如 `{"model": "gpt-4o-mini", "messages": [...]}`）。它的完整分支树（逐行核对到 `read_request_body()` 函数体）：
+
+```text
+read_request_body(request)
+├─ request is None → 返回 {}                                    (+10)
+├─ is_otlp_trace_request(request) → 返回 {}                     (+13，OTLP 追踪上报走独立解析)
+├─ 已缓存的解析结果存在 → 直接复用                                (+17，_safe_get_request_parsed_body)
+├─ content-type 取出 content_type                                (+21，safe_get_request_headers + get)
+├─ _normalize_media_type(content_type) 在 _BINARY_CONTENT_TYPES
+│    → await request.body()，_mark_body_received 计量，_parse_binary_body   (+25 到 +28)
+├─ _is_form_content_type(content_type)
+│    → 读表单；metadata 若是 JSON 字符串则 _parse_form_metadata 解析        (+29 到 +36)
+└─ 否则（常规 JSON）
+   ├─ await request.body()，_mark_body_received 计量             (+39 到 +40)
+   ├─ body 为空 → parsed_body = {}                               (+43)
+   └─ 否则
+      ├─ orjson.loads + _JSON_REQUEST_BODY.validate_python 成功 → dict      (+46 至 +47)
+      └─ orjson.JSONDecodeError
+         ├─ 体积超过 MAX_REQUEST_BODY_SIZE_TO_REPAIR_MB → 立即抛 ProxyException 400   (+52 到 +60)
+         └─ 否则：utf-8 解码 → 正则剔除非法代理对 → json.loads →
+            _DECODED_JSON 校验 → 可编码性检查 → _JSON_REQUEST_BODY 校验      (+62 到 +75)
+```
+
+几个关键设计，都是为本跳的「多路径共享 + body 可能被读多次」服务的：
+
+| 处理 | 为什么需要 | 锚点 |
+|---|---|---|
+| 解析结果缓存到 request 对象 | 同一请求的 body 会被端点、hook、guardrail 多次读取，缓存避免重复消费流 | `http_parsing_utils.py :: _safe_get_request_parsed_body() :: +0` |
+| orjson 而非标准 json | 热路径解析性能 | `read_request_body() :: +46` |
+| pydantic `TypeAdapter(Mapping[str, object])` 校验 | 在入口把非对象顶层 JSON（数组、字符串）挡下 | `http_parsing_utils.py :: _JSON_REQUEST_BODY :: +0` |
+| surrogate 修复重试 | 客户端发非法 UTF-16 代理对时不至于直接 500 | `read_request_body() :: +62` 到 `+75` |
+| 超大 malformed body 跳过修复 | 修复要跑两趟全量 `re.sub`，会阻塞事件循环，超阈值直接 400 | `read_request_body() :: +52` 到 `+60` |
+
+关键常量与助手符号（同文件，`+0` 均指定义行）：
+
+| 符号 | 作用 |
+|---|---|
+| `_JSON_REQUEST_BODY` | `TypeAdapter(Mapping[str, object])`，顶层必须是对象 |
+| `_DECODED_JSON` | `TypeAdapter(object)`，容忍任意顶层类型，用于 surrogate 修复后的中间校验 |
+| `_BINARY_CONTENT_TYPES` | 二进制 content-type 白名单（protobuf 等） |
+| `_normalize_media_type()` | 规整 content-type 便于比对 |
+| `_is_form_content_type()` | 判断是否表单 |
+| `_parse_binary_body()` | 二进制体解析 |
+| `_mark_body_received()` | 计量请求体读取字节 |
+| `is_otlp_trace_request()` | OTLP 上报识别 |
+| `_parse_form_metadata()` | 表单里字符串 metadata 解析 |
+| `_read_form_data()` | 读表单数据 |
+| `_safe_get_request_parsed_body()` | 取缓存解析结果 |
+| `safe_set_request_parsed_body()` | 写缓存解析结果 |
+| `safe_get_request_headers()` | 安全取请求头 |
+
+`read_request_body` 的异常出口也是防御性的：`ValidationError` 时对 pass-through 端点等放行返回 `{}`，否则抛 `ProxyException`（400）；客户端断开转 `HTTPException`。这些出口在 `read_request_body()` 函数体尾部（本场景走不到，body 是合法 JSON）。
+
+### 3.2 metadata 归一与注入
+
+锚点：`litellm/proxy/proxy_server.py :: chat_completion() :: +32` 到 `+47`
+
+整段包在 `if user_api_key_dict is not None:` 里（`+32`），所以鉴权依赖返回 `None` 时整个注入段被跳过。
+
+第一步是归一（`+33` 到 `+37`）：
 
 ```python
 if not isinstance(data.get("metadata"), dict):
-    # Covers both missing and JSON-string metadata (multipart /
-    # extra_body); otherwise `data["metadata"][k] = v` below raises
-    # TypeError on a string value and 500s the request.
     data["metadata"] = {}
-if hasattr(user_api_key_dict, "user_id") and user_api_key_dict.user_id is not None:
-    data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
-...
 ```
 
-注入键与来源一一对应：
+这是必需要有的防御：metadata 缺失、或是 JSON 字符串（multipart 表单与 extra_body 场景下会出现字符串形态）时，如果直接执行后面的 `data["metadata"][k] = v`，会在字符串上抛 `TypeError`，把请求变成 500。归一成空 dict 后，字符串形态的原始 metadata 会被丢弃（表单场景已在 `read_request_body` 里解析过）。
 
-| 注入键 | 来源字段 | 用途 |
+第二步是逐字段注入（`+38` 到 `+47`），每个字段都是「属性存在且非 None 才写」，五个键与来源一一对应：
+
+| 注入键 | 来源字段（`UserAPIKeyAuth`） | 用途 |
 |---|---|---|
-| `user_api_key_user_id` | `UserAPIKeyAuth.user_id` | 记账归属到用户 |
-| `user_api_key_team_id` | `UserAPIKeyAuth.team_id` | 记账归属到团队 |
-| `user_api_key_org_id` | `UserAPIKeyAuth.org_id` | 记账归属到组织 |
-| `user_api_key_org_alias` | `UserAPIKeyAuth.organization_alias` | 展示用 |
-| `agent_id` | `UserAPIKeyAuth.agent_id` | agent 归因 |
+| `user_api_key_user_id` | `user_id` | 记账归属到用户 |
+| `user_api_key_team_id` | `team_id` | 记账归属到团队 |
+| `user_api_key_org_id` | `org_id` | 记账归属到组织 |
+| `user_api_key_org_alias` | `organization_alias` | 展示用别名 |
+| `agent_id` | `agent_id` | agent 归因 |
 
-防御点：metadata 缺失或不是 dict（比如 multipart 表单里是 JSON 字符串）时先归一为空 dict，否则后面的 `data["metadata"][k] = v` 会在字符串上抛 TypeError。这个防御有对应的内联注释，就在 `chat_completion() :: +33`。
+对 master key 请求，`UserAPIKeyAuth` 是凭空构造的全权限对象，`user_id` 等可能为 None，于是对应键不写入。本场景是 master key，所以 metadata 通常只剩空 dict 或少量字段。
 
-metadata 注入完成后，`chat_completion() :: +49` 构造处理骨架并把请求交给下一跳：
+### 3.3 构造处理骨架并交接
+
+锚点：`litellm/proxy/proxy_server.py :: chat_completion() :: +49`
 
 ```python
 base_llm_response_processor: Final = ProxyBaseLLMRequestProcessing(data=data)
 ```
 
-## read_request_body 的完整逻辑
+被调方：`litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: __init__() :: +0`。
 
-```
-litellm/proxy/common_utils/http_parsing_utils.py :: read_request_body() :: +0
-```
+构造器把 `data` 存进 `self.data`，并把几个每请求状态位归零（`self.served_model = None`、`self.route_type = None`、`self._tags_before_guardrails = None`）。这个类是所有 LLM 端点共享的处理骨架：chat completions、responses API、Anthropic messages、embeddings 都用它，靠后续传入的 `route_type` 区分派发到哪个 SDK 方法。实例是每请求新建的，无共享可变状态。
 
-分支树（全部路径与函数体的实测对应）：
-
-```
-read_request_body(request)
-├─ request is None → {}                                   # +10 处
-├─ is_otlp_trace_request → {}                             # OTLP 追踪上报走独立解析
-├─ 请求对象上已有缓存的解析结果 → 直接复用                  # _safe_get_request_parsed_body
-├─ content-type 是二进制（protobuf 等）→ _parse_binary_body
-├─ content-type 是表单 → 读 form，metadata 若是 JSON 字符串则解析
-└─ 否则（常规 JSON）
-   ├─ body 为空 → {}
-   ├─ orjson.loads 成功 → 经 _JSON_REQUEST_BODY（pydantic TypeAdapter）校验
-   └─ orjson.JSONDecodeError → surrogate 修复后重试（处理非法 UTF-16 代理对）
-```
-
-关键常量与助手符号：
-
-| 符号 | 定义行（`http_parsing_utils.py`） | 作用 |
-|---|---|---|
-| `_JSON_REQUEST_BODY` | `+0`（39） | `TypeAdapter(Mapping[str, object])`，顶层必须是对象 |
-| `_DECODED_JSON` | `+0`（38） | `TypeAdapter(object)`，容忍任意顶层类型 |
-| `_BINARY_CONTENT_TYPES` | `+0`（35） | 二进制 content-type 白名单 |
-| `_normalize_media_type` | `+0`（104） | 规整 content-type 便于比对 |
-| `_is_form_content_type` | `+0`（111） | 是否表单 |
-| `_parse_binary_body` | `+0`（198） | 二进制体解析 |
-| `_mark_body_received` | `+0`（212） | 计量请求体读取字节 |
-| `is_otlp_trace_request` | `+0`（220） | OTLP 上报识别 |
-| `_parse_form_metadata` | `+0`（226） | 表单里字符串 metadata 解析 |
-| `_read_form_data` | `+0`（248） | 读表单数据 |
-| `_safe_get_request_parsed_body` | `+0`（436） | 取缓存解析结果 |
-| `safe_set_request_parsed_body` | `+0`（467） | 缓存解析结果 |
-| `safe_get_request_headers` | `+0`（512） | 安全取请求头 |
-
-设计意图解读：
-
-| 处理 | 为什么需要 |
-|---|---|
-| 解析结果缓存到 request 对象 | 同一请求的 body 可能被读多次（端点、hook、guardrail），避免重复消费流 |
-| orjson 而非标准 json | 热路径性能 |
-| pydantic TypeAdapter 校验 | 在入口处把非 dict 的顶层 JSON（数组、字符串）挡下来 |
-| surrogate 修复重试 | 客户端发非法编码时不至于直接 500；超过 `MAX_REQUEST_BODY_SIZE_TO_REPAIR_MB` 的巨体跳过修复、立即 400 |
-
-`read_request_body` 的异常出口也是防御性的：`ValidationError` 时对 pass-through 端点、Lens 路由等放行返回 `{}`，否则抛 `ProxyException`（400）；`ClientDisconnect` 转 `HTTPException`（客户端断开码）。
-
-## ProxyBaseLLMRequestProcessing 构造
-
-```
-litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: __init__() :: +0
-```
-
-构造器在 `common_request_processing.py` 1196 起（类体内部 `__init__`，偏移 `+0` 表示 def 行）：
+紧接着 `chat_completion() :: +51` 把请求交给下一跳：
 
 ```python
-def __init__(self, data: dict, served_model: str | None = None):
-    self.data = data
-    self.served_model = served_model
-    self._tags_before_guardrails: frozenset[str] | None = None
-    self.route_type: str | None = None
-```
-
-这个类是所有 LLM 端点的共享处理骨架：chat completions、responses API、Anthropic messages、embeddings 等端点都用它，靠 `route_type`（如 `"acompletion"`、`"anthropic_messages"`）区分后续分发到哪个 SDK 方法。实例是每请求新建的，无共享可变状态。
-
-## 错误传播从这里开始成形
-
-`base_process_llm_request()`（`common_request_processing.py :: base_process_llm_request :: +0`，3175 起）把后续处理包进两重防线：`open_sse_before_first_byte`（keepalive）和 `_within_total_timeout`（总超时）。端点函数再在 try/except 里包它，异常分派表：
-
-| 异常 | 端点层处理 | 源码锚点 |
-|---|---|---|
-| `ModifyResponseException` | 流式走 `_stream_chat_passthrough_block`，非流式经 `_passthrough_block_response` 构造 `finish_reason="content_filter"` 的假响应（guardrail 拦截，`proxy_server.py :: _passthrough_block_response` 13273 起） | `chat_completion() :: +74`（except 分支） |
-| `RejectedRequestError` | 构造带 `finish_reason` 的 `ModelResponse` 返回（guardrail/缓存拒绝） | `chat_completion() :: +79` |
-| 其他 `Exception` | 经 `handle_llm_api_exception()` 归一：先过 `post_call_failure_hook` 允许回调替换异常，再包成 OpenAI 兼容的 `ProxyException` 抛出（`common_request_processing.py :: ProxyBaseLLMRequestProcessing :: handle_llm_api_exception :: +0`，4659 起） | `chat_completion() :: +112` |
-
-### 缺 role 的 400（spec 行为变化，事实 B/#51124）
-
-旧实现会在消息缺 `role` 时自动补 `"user"`，新实现改抛 `MissingMessageRoleError`（`litellm/exceptions.py :: MissingMessageRoleError :: +0`；父链 `MalformedRequestFieldError` → `BadRequestError` → `openai.BadRequestError`），对外是 HTTP 400。校验入口在 `litellm/main.py :: completion :: +0`（5564 起）的请求整形段调 `validate_and_fix_openai_messages`（`litellm/utils.py :: validate_and_fix_openai_messages :: +0`），调用处签名带 `model` 与 `request_kwargs`：
-
-```python
-messages = validate_and_fix_openai_messages(
-    messages=messages, model=model, request_kwargs=_REQUEST_KWARGS_ADAPTER.validate_python(kwargs)
+result: Final = await base_llm_response_processor.base_process_llm_request(
+    request=request, fastapi_response=fastapi_response, user_api_key_dict=user_api_key_dict,
+    route_type="acompletion", proxy_logging_obj=proxy_logging_obj, llm_router=llm_router,
+    general_settings=general_settings, proxy_config=proxy_config, select_data_generator=select_data_generator,
+    model=model, user_model=user_model, user_temperature=user_temperature,
+    user_request_timeout=user_request_timeout, user_max_tokens=user_max_tokens, user_api_base=user_api_base,
+    version=version, on_passthrough_block=lambda block: _stream_chat_passthrough_block(block, user_api_key_dict, request),
 )
 ```
 
-函数实现在 `litellm/utils.py :: validate_and_fix_openai_messages :: +0`，签名带 `model` 与 `request_kwargs`；逐条消息的 role 修复/校验落在 `litellm/utils.py :: validate_chat_completion_user_messages :: +0`。同步 `completion()` 被 `litellm/main.py :: acompletion :: +0`（652 起）经 `run_in_executor` 丢进线程池执行（spec 事实 2），所以这条校验在代理主链上同样生效；代理侧的消息整形另有 `litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: common_processing_pre_call_logic :: +0` 等 pre-call 步骤，见第三层第 3 篇。
+参数怎么传：`data` 已经在构造器里存进 `self.data`，所以这里不再传；其余的请求上下文（`request`、`fastapi_response`、鉴权产物、各 `user_*` 默认参数、路由器、全局配置）全部按关键字传进去。`route_type="acompletion"` 是本场景的派发目标。`on_passthrough_block` 是一个回调，guardrail 拦截时用它把 block 以流的形式透传给客户端（本场景非流式且无 guardrail，走不到）。
 
-### token_counter 回 x-litellm-call-id（spec 行为变化，#51037）
+返回值 `result` 怎么处理（`chat_completion() :: +70` 到 `+73`）：是 `BaseModel` 就经 `model_dump_with_preserved_fields(result, exclude_unset=True)` 转成 dict，由 FastAPI 序列化为 JSON；否则原样返回（SSE 流等形态）。
 
-`/utils/token_counter` 端点（`proxy_server.py :: token_counter :: +0`，16094 起）现在把计数结果与发起推理调用的 `litellm_call_id` 关联：签名带 `litellm_call_id: Annotated[str | None, Header(alias=LITELLM_CALL_ID_HEADER)]`（调用方可带 `x-litellm-call-id` 请求头进来），函数体在 16114 处把 `count_request_tokens(...)` 包进 `litellm/proxy/common_utils/token_count_log.py :: answered_with_litellm_call_id :: +0`（143 起）。该助手在成功应答与错误应答上都 `setdefault(LITELLM_CALL_ID_HEADER, litellm_call_id)`，把调用 id 写回响应头，这样计数的日志行能与那次推理调用的日志 join 起来。常量 `LITELLM_CALL_ID_HEADER = "x-litellm-call-id"` 定义在 `litellm/proxy/common_utils/openai_error_payload.py :: LITELLM_CALL_ID_HEADER :: +0`（19 起），错误载荷同样带这个头。
+## 错误传播：本跳的三条 except 分支
 
-**计数口径更新（#51447 / #51334）**：token 计数不再只数消息正文，还计入对话中途的工具变化与 Anthropic server tool 历史。`litellm/litellm_core_utils/token_counter.py` 新增 `_tool_change_tokens`（1990 起，`count_function` 判据，工具结构变了会额外计 token）、`_is_text_block`（1874）、`_has_only_text_content`（1880）、`has_only_text_content`（1892，用于判定纯文本消息）——中途换工具或带 server tool 历史的消息，计数结果会随之变化。
+端点函数把 `base_process_llm_request` 包进 try/except（`chat_completion() :: +50` 起 try，三个 except 分别在 `+74`、`+79`、`+112`）。本跳自己不抛业务异常，但下一跳抛出的异常会一路冒到这里被翻译：
 
-### SSE keepalive 与 guardrail block（spec 事实 B/#51114）
+| 异常 | 端点层处理 | 锚点 |
+|---|---|---|
+| `ModifyResponseException` | 流式走 `_stream_chat_passthrough_block`；非流式先 `_record_passthrough_block` 记账，再经 `_passthrough_block_response` 构造 `finish_reason="content_filter"` 的假响应 | `chat_completion() :: +74`；`proxy_server.py :: _passthrough_block_response() :: +0` |
+| `RejectedRequestError` | 跑 `post_call_failure_hook` 留失败日志，再构造 `ModelResponse`（usage 全 0）返回；stream 为真时包成 `CustomStreamWrapper` 流式返回 | `chat_completion() :: +79` 到 `+133` |
+| 其他 `Exception` | 交给 `handle_llm_api_exception` 归一：先过 `post_call_failure_hook` 允许回调替换异常，再包成 OpenAI 兼容的 `ProxyException` 抛出 | `chat_completion() :: +112`；`common_request_processing.py :: ProxyBaseLLMRequestProcessing :: handle_llm_api_exception() :: +0` |
 
-`base_process_llm_request` 的返回语句（`+43` 处）调用 `open_sse_before_first_byte`（`common_request_processing.py :: open_sse_before_first_byte :: +0`，1719 起），把上游 `ttft` 静默期填上 `: ping` 注释帧。端点把 `on_passthrough_block` 回传进来：当 keepalive 已打开响应、之后 guardrail 拦截时，流式 block 经 `_late_block_or_failure`（`common_request_processing.py :: _late_block_or_failure :: +0`，1683 起）中继给 `on_passthrough_block`，把 block 的流透传给客户端，而不是把 block 当普通失败帧。`ttft_keepalive_interval`（`common_request_processing.py :: ttft_keepalive_interval :: +0`，1623 起）决定是否启用 keepalive，是否启用取决于 `litellm_settings.sse_keepalive_ping_interval_seconds`。
+本场景（成功路径）走不到任何 except 分支。
 
-`ModifyResponseException` 定义在 `litellm/exceptions.py :: ModifyResponseException :: +0`（1357 起），`RejectedRequestError` 定义在同文件 700 起（`BadRequestError` 子类）。`ProxyException` 定义在 `litellm/proxy/_types.py :: ProxyException :: +0`（3946 起），是所有端点对外错误的一致形状（OpenAI 风格 error 对象 + code/message/param）。
+## 调用关系表（关键边）
 
-## 与下一跳的交接
+| 调用方 | 被调用方 | 传什么 | 返回什么 |
+|---|---|---|---|
+| FastAPI 路由层 | `proxy_server.py :: chat_completion()` | HTTP 报文解析成的 4 个签名参数 | JSON dict 或 SSE 流 |
+| FastAPI 依赖注入（先于函数体） | `user_api_key_auth.py :: user_api_key_auth()` | `request`、各 API key header | `UserAPIKeyAuth` |
+| `chat_completion()` | `http_parsing_utils.py :: read_request_body()` | `request` | `data` dict |
+| `read_request_body()` | `orjson.loads` / `_JSON_REQUEST_BODY.validate_python` | 原始 body bytes | 解析后的映射 |
+| `chat_completion()` | `common_request_processing.py :: ProxyBaseLLMRequestProcessing` 构造器 | `data` | 处理骨架实例 |
+| `chat_completion()` | `ProxyBaseLLMRequestProcessing :: base_process_llm_request()` | `route_type="acompletion"` + 请求上下文 | 响应对象 / SSE 流 / 抛 `ProxyException` |
 
-本篇结束时，`data` 已含 metadata，`ProxyBaseLLMRequestProcessing` 实例已持有它。下一步是 `base_process_llm_request` → 鉴权后的 pre-call 处理（继续第三层第 3 篇）。鉴权本身先于这一切，见下一篇。
+## 状态变化复述
+
+进入本跳前：只有 HTTP 报文。离开本跳时：`data` 是 dict 且已含 `metadata`（本场景多为空 dict），`ProxyBaseLLMRequestProcessing` 实例持有它，`route_type` 尚未设置（要到 `_process_llm_request` 里才设）。鉴权产物 `user_api_key_dict` 已经存在，但只被用来注入 metadata，真正的权限/预算消费在下一跳之后的 pre-call 阶段。
+
+## 未确认项
+
+- `chat_completion()` 装饰器四条路径的装饰器行号未逐一核对（本篇只锚函数定义行与函数体内偏移，装饰器块在 `+0` 之前，不影响偏移语义）。
+- `handle_llm_api_exception` 内部逐行实现未读取，不臆测，本篇只引用它的职责与调用点（第三层收尾篇展开）。
+- surrogate 修复里 `MAX_REQUEST_BODY_SIZE_TO_REPAIR_MB` 的具体阈值数值未读取，不臆测。
+
+## 源码索引
+
+| 符号 | 文件 :: 符号 | 绝对定义行 |
+|---|---|---|
+| 端点函数 | `litellm/proxy/proxy_server.py :: chat_completion` | 13290 |
+| passthrough block 响应 | `litellm/proxy/proxy_server.py :: _passthrough_block_response` | 13205 |
+| body 解析 | `litellm/proxy/common_utils/http_parsing_utils.py :: read_request_body` | 272 |
+| 处理骨架类 | `litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing` | 2382 |
+| 入口委托 | `litellm/proxy/common_request_processing.py :: base_process_llm_request` | 3180 |
+| 异常归一 | `litellm/proxy/common_request_processing.py :: handle_llm_api_exception` | 4664 |

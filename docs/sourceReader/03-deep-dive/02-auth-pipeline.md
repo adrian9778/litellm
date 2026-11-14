@@ -1,189 +1,249 @@
-# 鉴权管线
+# 鉴权管线：API key 如何变成 UserAPIKeyAuth，以及预算与模型门禁
 
-> 所属层级：第三层（主链路拆解） | 拆解对象：第二层场景的跳 2
+> 所属层级：第三层（主链路逐跳拆解） | 拆解对象：第二层场景的跳 2
+> 本篇基准提交：`411b64dc7a`（工作区当前 HEAD）
 
-## 本篇回答的问题
+一句话定位：`Authorization: Bearer <key>` 在 FastAPI 调用端点函数体之前被校验，经过「读 body 前先拒 → 读 body → 构建 key 身份 → 授权检查（模型门禁 + 预算 + 请求体安全）」四段，产出一个 `UserAPIKeyAuth` 对象，或者以 `ProxyException` 终止请求。
 
-`Authorization: Bearer sk-...` 是怎么变成一个 `UserAPIKeyAuth` 对象的？中间做了哪些校验，顺序是什么？限流为什么不在这一步？
+术语约定：`virtual key`（proxy 自己签发的 `sk-` 形态 key，对应 DB 里的 `LiteLLM_VerificationToken` 行）、`master key`（proxy 根凭证，等于管理员）、`model group`（router 里的模型组名，一个组可挂多个 deployment）、`end user`（调用方在请求体 `user` 字段里声明的最终用户）。
 
-## 入口与总体结构
+## 本跳在主链中的位置
 
-```
-litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth() :: +0
-```
-
-函数 docstring 一句话概括：校验用户传来的 API key 或 JWT，合法则返回 `UserAPIKeyAuth`。
+主链 13 跳里，本篇覆盖跳 2。它的时间点夹在跳 1（路由匹配）与跳 3（读 body、注 metadata）之间，由 FastAPI 的 `Depends(user_api_key_auth)` 驱动，物理上先于 `chat_completion` 函数体。上一跳交给它的是原始 HTTP 报文；它交给下一跳的是一个 `UserAPIKeyAuth` 对象（供跳 3 注入 metadata）和一个已通过门禁的「放行许可」。鉴权失败则请求在此终止，不会进入跳 3。
 
 ```mermaid
-flowchart TD
-    Entry["user_api_key_auth :: +0"] --> RejectHead["_reject_from_headers_before_reading_body :: +20（4675）"]
-    RejectHead -->|"blocked/over-limit 头已定罪，直接拒"| RejectOut["429 / 403"]
-    RejectHead -->|"其余：读 body"| DeferBody["_read_request_body_deferring_parse_failure :: +23"]
-    DeferBody --> Scope["spend_counter_batch_scope(_spend_counter_store) :: +31"]
-    Scope --> Builder["user_api_key_auth_builder :: +34"]
-    Builder --> Validate["validate_resolved_virtual_key :: +0（3094）"]
-    Validate --> Norm["_normalize_model_for_auth :: +0（477，调用点 3143）"]
-    Validate --> Prefetch["_prefetch_referenced_auth_objects :: +0（4500）→ arm_routing_cooldowns :: +0（4517）"]
-    Validate --> Served["budget_served_model :: +0（365，调用点 3198）"]
-    Builder --> Ret["_return_user_api_key_auth_obj :: +0（4679）"]
-    Entry --> Authed["_authorize_authenticated_request :: +72（4329）"]
-    Authed --> Common["run_centralized_common_checks :: +0（3707）"]
-    Common --> Skip["_should_skip_budget_checks（async）:: +0（4282）"]
-    Common --> Out["UserAPIKeyAuth"]
+sequenceDiagram
+    autonumber
+    participant FW as FastAPI 依赖注入
+    participant UA as user_api_key_auth
+    participant HJ as _reject_from_headers_before_reading_body
+    participant BD as _read_request_body_deferring_parse_failure
+    participant BU as user_api_key_auth_builder
+    participant VA as validate_resolved_virtual_key
+    participant AZ as _authorize_authenticated_request
+    participant CC as run_centralized_common_checks
+
+    FW->>UA: Depends(user_api_key_auth)（端点函数体之前）
+    UA->>UA: _ensure_parent_otel_span_on_request_state
+    UA->>HJ: 头信息已定罪？只查缓存
+    HJ-->>UA: blocked→401 / 限流击穿→429（直接终止）或放行
+    UA->>BD: 读 body，解析失败推迟
+    BD-->>UA: (request_data, body_parse_exception)
+    UA->>BU: user_api_key_auth_builder(defer_team_checks=True)
+    BU->>VA: virtual key 路径：缓存→DB，跑 key 身份侧检查
+    VA-->>BU: 补齐 user/team 引用后的 valid_token
+    BU-->>UA: authenticated（key 身份已解析）
+    UA->>AZ: _authorize_authenticated_request
+    AZ->>AZ: should_call_route / enforce_key_and_fallback_model_access
+    AZ->>CC: run_centralized_common_checks
+    CC->>CC: _should_skip_budget_checks → common_checks（预算/团队/组织）
+    CC-->>AZ: 放行
+    AZ-->>UA: UserAPIKeyAuth
+    UA-->>FW: UserAPIKeyAuth（注入端点函数签名）
 ```
 
-外层函数只做编排（`user_api_key_auth() :: +0`，4565 起）：
+## 入口编排
 
+锚点：`litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth() :: +0`
+
+签名（`+0` 到 `+8`）除了 `request`，还通过 `fastapi.Security` 声明了六个可选的凭证 header：`api_key`（标准 Authorization）、`azure_api_key_header`、`anthropic_api_key_header`、`google_ai_studio_api_key_header`、`azure_apim_header`、`custom_litellm_key_header`。这样多种云厂商形态的 key 都能从各自的 header 进来。
+
+外层函数只做编排，逐步拆解：
+
+| 步 | 动作 | 锚点 | 失败行为 |
+|---|---|---|---|
+| 1 | 建 server span 并挂到 `request.state`，保证坏 body 也有 trace | `+17` `_ensure_parent_otel_span_on_request_state` | 不失败 |
+| 2 | 取路由字符串 `route = get_request_route(request)` | `+19` | 不失败 |
+| 3 | **读 body 前先拒**：头信息已定罪就终止 | `+21` `_reject_from_headers_before_reading_body` | blocked 抛 401；限流击穿抛 429 |
+| 4 | 读 body 但推迟解析失败 | `+24` `_read_request_body_deferring_parse_failure` | 返回 `(dict, ProxyException \| None)`，不立即抛 |
+| 5 | 进入 `phase_span(f"auth {route}")` + `service_target(AUTH_OBJECTS_TARGET)` + `spend_counter_batch_scope(_spend_counter_store())` 复合 with 块 | `+32` 到 `+35` | 不失败 |
+| 6 | 调 `user_api_key_auth_builder(..., defer_team_checks=True)` 得到 `authenticated` | `+37` 到 `+47` | 抛异常时：若 body 解析也失败则改抛 body 异常（`+48` 到 `+54`） |
+| 7 | 用 `_GENERAL_SETTINGS_ADAPTER` 校验 `general_settings`，按 `access_group_rules` 决定是否 `model_copy()`；清空 `budget_reservation`；`agent_caller_from_headers`；`_seed_request_destinations` | `+59` 到 `+67` | 不失败 |
+| 8 | body 解析成功才跑 `_authorize_authenticated_request`（授权段） | `+75` 到 `+83` | 抛 `ProxyException` 终止 |
+| 9 | 退出 with 块后 `seed_request_identity`（身份播种到 baggage） | `+89` 到 `+92` | 不失败 |
+| 10 | body 解析失败则 `_record_unparsable_body_failure` 后抛出 | `+95` 到 `+101` | 抛 body 异常 |
+| 11 | `_resolve_request_principal` 投影 caller 身份（失败仅告警，不拒） | `+109` 到 `+112` | 不失败 |
+| 12 | 返回 `user_api_key_auth_obj` | `+114` | — |
+
+「推迟解析失败」是个刻意的编排：body JSON 坏了也要先试鉴权，这样错误响应里能带上调用者身份（比如 master key 用户拿到的是 400 而不是 401）。但授权段（第 8 步）不会为一个从未解析成功的 body 跑——没有 model 可供门禁，且预算预留会污染 spend 计数器。`_read_request_body_deferring_parse_failure`（`litellm/proxy/auth/user_api_key_auth.py :: _read_request_body_deferring_parse_failure() :: +0`）返回 `(dict, ProxyException | None)`，把解析失败以值的形式带回。
+
+预算计数的作用域在这里建立：`spend_counter_batch_scope(_spend_counter_store())`（`+34`）把整段鉴权里的花费读写收进同一个 batch。`_spend_counter_store()`（`litellm/proxy/auth/user_api_key_auth.py :: _spend_counter_store() :: +0`）返回 proxy 的 spend counter store，旧的 `_spend_counter_redis_cache` 已删除。
+
+## 第一段：读 body 前先拒
+
+锚点：`litellm/proxy/auth/user_api_key_auth.py :: _reject_from_headers_before_reading_body() :: +0`（调用点在 `user_api_key_auth() :: +21`）
+
+这段只回答一个问题：凭请求头里的 key，能不能不读 body 就定罪？
+
+```text
+_reject_from_headers_before_reading_body(request, api_key, custom_litellm_key_header, route)
+├─ RouteChecks.is_llm_api_route(route) 为假 → 直接 return（非 LLM 路由不走预判）   (+8)
+├─ 解析 bearer token：自定义 litellm key header 优先，其次标准 bearer            (+14 到 +25)
+├─ bearer_token 为空 → return（无凭证，交给完整鉴权路径处理）                      (+26)
+├─ hash_token(bearer_token)                                                      (+28)
+├─ IdentityStore(..., check_cache_only=True).resolve(hashed_token)               (+30 到 +34)
+│    └─ 任何异常（缓存 miss）→ return，走完整鉴权                                  (+35)
+├─ cached_key.blocked is True
+│    → _preflight_failure_request_data 拼失败请求资料
+│    → handle_authentication_error 抛 ProxyException 401                          (+38 到 +55)
+└─ 取 parallel_request_limiter hook，若不是 v3 handler → return                    (+56 到 +58)
+   raise_if_over_limit_before_body(rate_limited) 抛 HTTPException
+   → post_call_failure_hook 留日志 → 转 ProxyException 抛出                        (+66 到 +80)
 ```
-user_api_key_auth(request, ...)
-├─ _ensure_parent_otel_span_on_request_state(request)      # 先建 server span，坏 body 也能留 trace
-├─ _reject_from_headers_before_reading_body()              # 头信息已定罪（blocked/over-limit key）先拒，不读 body（+20，4675）
-├─ _read_request_body_deferring_parse_failure()            # 读 body 但推迟解析错误（+23）
-├─ get_request_route()                                     # 路由识别
-├─ phase_span("auth ...") 内：
-│   ├─ user_api_key_auth_builder(...)                      # 真正的鉴权构建器（+34）
-│   ├─ 失败时 _authorize_authenticated_request()           # 兜底：已认证身份复用（+72）
-│   └─ 包 spend_counter_batch_scope(_spend_counter_store())（+31）
-├─ seed_request_identity()                                 # 身份播种到 baggage，auth span 关闭后
-└─ 若 body 解析失败：_record_unparsable_body_failure() 后再抛
-```
 
-「推迟解析失败」是个细节设计：body JSON 坏了也要先试鉴权，这样错误响应里能带上调用者身份（比如 master key 用户能拿到 400 而不是 401）。`_read_request_body_deferring_parse_failure`（`user_api_key_auth.py :: _read_request_body_deferring_parse_failure :: +0`，2214 起）返回 `(dict, ProxyException | None)`，把解析失败以值的形式带回，由外层在身份播种之后再抛出。
+判据是「只认已在缓存里的 key」：缓存 miss 什么都不改变，完整鉴权路径照跑。价值在于——对一个已被限流击穿的 key 的并发大 payload 重试，不再每个都把 body 缓冲进内存只为回一个 429。拒绝前用 `_preflight_failure_request_data`（反解模型，最多读 64KB body、1 秒超时）拼出失败请求资料，经 `post_call_failure_hook` 记下 call id、model 与 key 的失败日志，所以 SpendLogs 不会缺这批先头拒绝行的归属信息。
 
-**#51428 先头拒绝**：`_reject_from_headers_before_reading_body`（`user_api_key_auth.py :: _reject_from_headers_before_reading_body :: +0`，2236 起，调用点在 `user_api_key_auth` 内 4675，即 +20）只认已在缓存里的 key——blocked 或已被限流击穿的 key，凭请求头信息就能定罪，直接回 429/403，**不再为它读整个请求体**。这样对限流 key 的并发大 payload 重试，不再每个都缓冲进内存只为回一个 429。只有 `RouteChecks.is_llm_api_route` 的 LLM 路由才走这个预判；缓存 miss 则照旧走完整鉴权路径。
+## 第二段：构建 key 身份（三种凭证分岔）
 
-**#51525 先头拒绝也要留日志**：拒绝前用 `_preflight_failure_request_data`（走 `_preflight_failure_model` 反解模型，最多读 64KB body、1 秒超时，`PREFLIGHT_FAILURE_JSON_BODY_MAX_BYTES`/`PREFLIGHT_FAILURE_JSON_BODY_TIMEOUT_SECONDS`）拼出失败请求资料，再经 `proxy_logging_obj.post_call_failure_hook` 记下 call id、model 与 key 的失败日志（限流检查走 `limiter.raise_if_over_limit_before_body`）。拒绝结果对调用方不变（transform 失败仍回原 rejection），只是 SpendLogs 不再缺先头拒绝这批行的归属信息。
+锚点：`litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth_builder() :: +0`
 
-一个与旧版不同的编排点：`user_api_key_auth` 现在整个鉴权段包进 `phase_span(f"auth {route}")` + `spend_counter_batch_scope(_spend_counter_store())`（`user_api_key_auth() :: +31`）。`_spend_counter_store()`（`user_api_key_auth.py :: _spend_counter_store :: +0`，4479 起）返回 proxy 的 `spend_counter_store`（`proxy_server.py` 里由 `litellm/redis/stores/spend_counters` 构造），预算扣减和花费读取走这一层（spec 事实 B/#50170，`_spend_counter_redis_cache` 已删）。
-
-## 构建器：三种凭证的分岔
-
-```
-litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth_builder() :: +0
-```
+外层传入 `defer_team_checks=True`（`user_api_key_auth() :: +46`），含义是：团队相关校验从构建器内部推迟到授权段，让「key 身份」先解析出来，团队预算/模型门禁放到 model 确定之后。内部服务入口 `authorize_internal_virtual_key`（`litellm/proxy/auth/user_api_key_auth.py :: authorize_internal_virtual_key() :: +0`）同样传 `defer_team_checks=True`。
 
 按凭证类型分三条路：
 
 | 凭证 | 判定方式 | 路径 |
 |---|---|---|
-| master key | `secrets.compare_digest(api_key, master_key)` | 最短路径，全权限 |
+| master key | `secrets.compare_digest(api_key, master_key)` | 最短路径，全权限，跳过预算 |
 | JWT | `JWTHandler.is_jwt(token)` / 配置了 jwt_auth | `handle_jwt.py` 解析签名后映射权限 |
-| virtual key（`sk-` 开头的代理签发 key） | 默认路径 | 缓存 → DB 查 `LiteLLM_VerificationToken` |
+| virtual key | 默认路径 | 缓存 → DB 查 `LiteLLM_VerificationToken` |
 
-构建器开头先跑 `pre_db_read_auth_checks`（带 `defer_team_checks` 参数），再做自定义 header 的 key 解析（`get_api_key`、`get_api_key_from_custom_header`）。
+master key 用 `compare_digest` 而非 `==` 防时序攻击，直接拿到 proxy admin 身份。
 
-**defer_team_checks（spec 事实 B，推迟模型校验）**：`user_api_key_auth_builder` 签名新增 `defer_team_checks: bool = False`（`+0`，2329 起），把团队相关校验从构建器内部推迟到鉴权后段。`user_api_key_auth` 外层传 `defer_team_checks=True`（`user_api_key_auth() :: +34` 调用处，参数在 +43），内部服务入口 `authorize_internal_virtual_key`（`user_api_key_auth.py :: authorize_internal_virtual_key :: +0`，5079 起）同样 `defer_team_checks=True`（调用点 5091）。推迟意味着鉴权主体（key 身份）先解析出来，团队预算/模型门禁放到模型确定之后。
+virtual key 的命中顺序（构建器内 `get_key_object` 段）：先 `user_api_key_cache.async_get_cache(cache_key)`（内存 + Redis 的 `UserApiKeyCache`），再 `ExperimentalUIJWTToken.get_key_object_from_ui_hash_key()`（UI 会话哈希），都未命中才走 Prisma 查库。查到的行就是 `LiteLLM_VerificationToken`，字段直接铺进 `UserAPIKeyAuth`。
 
-master key 校验（`secrets.compare_digest` 在其中）用 `compare_digest` 而非 `==` 防时序攻击。master key 直接拿到 proxy admin 身份，跳过所有预算检查（`user_api_key_auth_builder() :: is_master_key_valid` 分支）。
-
-## virtual key 路径
-
-命中顺序（`user_api_key_auth_builder() :: get_key_object` 段）：
-
-```
-1. user_api_key_cache.async_get_cache(cache_key)     # 内存+Redis（UserApiKeyCache）
-2. ExperimentalUIJWTToken.get_key_object_from_ui_hash_key()   # UI 会话哈希
-3. 未命中 → Prisma 查库（get_key_object_from_db trace 段）
-```
-
-查到的行就是 `LiteLLM_VerificationToken`（schema 见 `schema.prisma`），字段直接铺进返回对象：
-
-```
+```text
 litellm/types/proxy/auth/user_api_key_auth.py :: UserAPIKeyAuth :: +0
 ```
 
-核心字段速览：
+核心字段与鉴权中的用途：
 
-| 字段 | 含义 | 鉴权中的用途 |
+| 字段 | 含义 | 用途 |
 |---|---|---|
 | `token` / `api_key` | key 本体（哈希形式） | 身份标识 |
 | `user_id` / `team_id` / `organization_id` | 归属三级 | 预算与权限的挂载点 |
 | `models` | 允许的模型列表 | 模型访问检查 |
 | `max_budget` / `spend` | 预算上限 / 已花费 | 预算检查 |
-| `tpm_limit` / `rpm_limit` | 限流上限 | 交给限流 hook 用 |
-| `user_tpm_limit` / `user_rpm_limit` | 用户级限流 | 交给限流 hook 用 |
+| `tpm_limit` / `rpm_limit` | key 级限流上限 | 带出去给限流 hook |
+| `user_tpm_limit` / `user_rpm_limit` | 用户级限流 | 带出去给限流 hook |
 | `allowed_model_region` | 区域约束 | 部署过滤 |
 
-key 不存在或格式不对时返回 401，并给格式提示（`sk-` 前缀检查、JWT 形态提示），见 `user_api_key_auth_builder() :: valid_token is None` 分支。注意代码注释强调错误提示不能依赖 message 文本判断类型。
+### validate_resolved_virtual_key：key 身份侧检查
 
-## 模型归一化与路径参数模型访问（spec 事实 B/#51226）
+锚点：`litellm/proxy/auth/user_api_key_auth.py :: validate_resolved_virtual_key() :: +0`
 
-鉴权在跑预算/模型门禁前，先把请求的 `model` 归一成鉴权应该针对的那个模型。`_normalize_model_for_auth`（`user_api_key_auth.py :: _normalize_model_for_auth :: +0`，477 起）依次做三件事：
+这个函数的 docstring 自注释了官方检查顺序（1 token 能否调用该模型、1a 能否调用客户端声明的 fallback 模型、2 token 的 user 是否超预算、3 user 在团队内的花费、4 end user 预算、5 token 是否过期、6 token 花费、7 按模型花费、8 team 预算、9 team 对 organization 预算）。实际执行时，构建器里跑的是 key 身份侧的前半段：
 
+```text
+validate_resolved_virtual_key(...)
+├─ valid_token 非空 → _update_key_budget_with_temp_budget_increase          (+23)
+├─ valid_token.blocked is True → 抛 ProxyException 401                       (+42 到 +49)
+├─ await _normalize_model_for_auth(request_data, valid_token, request, route) (+51)
+├─ await _prefetch_referenced_auth_objects(valid_token, end_user_id=..., ...) (+52 到 +54)
+└─ 取 user_obj（get_user_object），把 user 的 model_max_budget 回填进 valid_token  (+57 到 +90 起)
 ```
-_normalize_model_for_auth(request_data, valid_token, request, route)
-├─ _normalize_claude_model()                    # Claude 别名
-├─ _resolve_router_settings_model_group_alias() # model_group_alias（key/team/router 别名）
-└─ _resolve_codex_native_chatgpt_model()        # Codex 原生路由
+
+**模型归一**：`_normalize_model_for_auth`（`litellm/proxy/auth/user_api_key_auth.py :: _normalize_model_for_auth() :: +0`）在跑预算/模型门禁前把请求的 `model` 归一成鉴权应该针对的那个模型，依次做 Claude 别名归一、`model_group_alias` 解析（key/team/router 别名表）、Codex 原生路由解析。这一步让允许列表按「请求实际路由到的模型组」授权，而不是按客户端写的原始字符串。
+
+**auth prefetch 与冷却预读**：`_prefetch_referenced_auth_objects`（`litellm/proxy/auth/user_api_key_auth.py :: _prefetch_referenced_auth_objects() :: +0`）一次把后续校验要读的 user/team/end-user 对象与花费计数器拉进缓存，并通过 `before_read=arm_routing_cooldowns` 把路由冷却预读挂进同一趟往返。`arm_routing_cooldowns`（`litellm/proxy/auth/user_api_key_auth.py :: arm_routing_cooldowns() :: +0`）仅在 auth prefetch 真正读 Redis 时武装，经 `RoutingContext(llm_router).arm_cooldown_prefetch()`（`litellm/router_api.py :: RoutingContext :: arm_cooldown_prefetch :: +0`）把路由层冷却预读进 native 往返；从内存命中或被拒的请求不提前读冷却。这与 04 篇的选路冷却共用同一份缓存。
+
+## 第三段：授权检查（模型门禁 + 预算）
+
+锚点：`litellm/proxy/auth/user_api_key_auth.py :: _authorize_authenticated_request() :: +0`（调用点在 `user_api_key_auth() :: +75`）
+
+只有 body 解析成功才进这一段。顺序：
+
+```text
+_authorize_authenticated_request(...)
+├─ RouteChecks.should_call_route(...)            # 禁用路由检查
+├─ enforce_key_and_fallback_model_access(...)    # 模型门禁（含客户端声明的 fallback 模型）
+└─ run_centralized_common_checks(...)            # 预算/团队/组织/请求体安全
 ```
 
-其中 `_resolve_router_settings_model_group_alias`（400 起）在 `MODEL_GROUP_ALIAS_RESOLVED_SCOPE_KEY` 没置位时把请求模型改写为解析后的 group alias，让允许列表按「请求实际路由到的模型组」授权。
+**模型门禁**的核心在 `enforce_key_and_fallback_model_access`（`litellm/proxy/auth/user_api_key_auth.py :: enforce_key_and_fallback_model_access() :: +0`），逐条判定 key 能否调用请求的模型。支持通配（`*`、`anthropic/*` 这类 fnmatch 模式）与 model group 展开。请求体里客户端声明的 fallback 模型也一并校验，防止用「失败后回退」绕过门禁。
 
-预算豁免按「服务所用模型」判定（spec 事实 B/#51058）：`budget_served_model`（`user_api_key_auth.py :: budget_served_model :: +0`，365 起）只在命中 `_SERVED_MODEL_BUDGET_WAIVER_ROUTES`（341 起，`/chat/completions`、`/completions`、`/responses` 等）且 body `model` 是字符串、请求已被 alias 解析时，才经 `litellm/proxy/litellm_pre_call_utils.py :: request_served_model :: +0`（3804 起）算出「服务所用模型」；否则原样返回请求模型。它配合 `litellm/proxy/auth/auth_checks.py :: key_model_aliases_for_auth_check :: +0` / `litellm/proxy/auth/auth_checks.py :: team_model_aliases_for_auth_check :: +0`（5295 / 5299 起）读取 key/team 的别名表。
+**集中公共检查**：`run_centralized_common_checks`（`litellm/proxy/auth/user_api_key_auth.py :: run_centralized_common_checks() :: +0`）是 JWT 与 key 两条路径共用的检查汇合点，检查项依次是（转写自 `auth_checks.py :: common_checks() :: +0` 的 docstring，该函数是它最终调用的实现）：团队是否 blocked、project 是否 blocked、团队/项目能否调用该模型、模型访问组授权、团队是否在预算内、project 预算、project 软预算告警、请求体传入的 user（end user）是否在预算内、是否强制 end user、全局 `litellm.max_budget`、guardrail 改动是否被允许、请求体是否安全、organization 级检查。
 
-path 参数模型访问（#51226）：`litellm/proxy/auth/auth_utils.py :: get_model_from_request :: +0`（2762 起）新增先查 `_handler_selected_model`（`auth_utils.py :: _handler_selected_model :: +0`，2833 起）——对 Google `models/{model}:generateContent`、`/openai/deployments/{model}/images/generations` 等把模型放在路径里的 handler，从 `_HANDLER_MODEL_ROUTES` 正则表（2833 行前段）抽路径模型。抽出的 handler 模型优先返回；否则 `_extract_model_candidates_from_request`（`auth_utils.py :: _extract_model_candidates_from_request :: +0`，2641 起）在候选解析里把 `proxy_server.py :: user_model_view :: +0`（3194 起，返回全局配置的 `user_model`）作为覆盖项之一，最后兜底 `_model_from_route_path`（`auth_utils.py :: _model_from_route_path :: +0`，2857 起）从路径正则抽模型。
+**预算豁免开关**：`_should_skip_budget_checks`（`litellm/proxy/auth/user_api_key_auth.py :: _should_skip_budget_checks() :: +0`，已改 async）决定是否跳过预算段。它内部经 `budget_served_model`（`litellm/proxy/auth/user_api_key_auth.py :: budget_served_model() :: +0`）换算「服务所用模型」，再调 `request_skips_budget_checks`（`litellm/proxy/auth/auth_checks.py :: request_skips_budget_checks() :: +0`）。`budget_served_model` 只对 `/chat/completions`、`/completions`、`/responses` 等 LLM 路由，且 body `model` 是字符串、请求已被 alias 解析时，才算出「服务所用模型」用于零成本豁免判定；否则原样返回请求模型。
 
-## 校验序列（virtual key 路径）
+**请求体凭证清洗**：`run_centralized_common_checks` 在推迟的模型体检查处调 `is_request_body_safe`（`litellm/proxy/auth/auth_utils.py :: is_request_body_safe() :: +0`），由三部分组成：
 
-`validate_resolved_virtual_key()`（`user_api_key_auth.py :: validate_resolved_virtual_key :: +0`，3094 起）里有一段自注释，就是官方的检查顺序，转写如下：
+| 符号 | 作用 |
+|---|---|
+| `auth_utils.py :: _BANNED_REQUEST_BODY_PARAMS :: +0` | 请求体禁带参数表：`api_base`/`base_url` 重定向、AWS 身份选择器、Azure Entra 凭证、endpoint 重定向字段、可观测性凭证 |
+| `auth_utils.py :: _reject_secret_references() :: +0` | 值以 `os.environ/` 或 `oidc/` 开头即拒，secret reference 只允许部署或管理员配置的凭证携带 |
+| `auth_utils.py :: _check_banned_params() :: +0` | 统一执行点：禁带参数无管理员 opt-in（`allow_client_side_credentials` 全局或 `configurable_clientside_auth_params` 按部署）即抛 `ValueError`；旧版「调用方带了 api_key 就整表放行」的隐式旁路已删除 |
 
-| 序 | 检查 | 实现锚点 |
+## 返回与失败出口
+
+所有检查通过后，`_return_user_api_key_auth_obj`（`litellm/proxy/auth/user_api_key_auth.py :: _return_user_api_key_auth_obj() :: +0`）把 DB 行数据加上请求上下文（`request_route`、`parent_otel_span`、per-model 限流映射等）组装成 `UserAPIKeyAuth`，交给 FastAPI 注入端点函数签名。对 master key 请求，这个对象是凭空构造的全权限版本。
+
+失败出口（抛 `ProxyException`，由 FastAPI 翻成 HTTP 状态码）：
+
+| 检查失败 | 异常 | HTTP |
 |---|---|---|
-| 1 | token 能否调用该模型 | `enforce_key_and_fallback_model_access`（含客户端声明的 fallback 模型；4846 起，在 `_authorize_authenticated_request` 内调用） |
-| 2 | token 的 user 是否超预算 | `_check_user_model_budget`（633 起） |
-| 3 | user 在其团队内的花费是否超预算 | `validate_resolved_virtual_key` 的 team member 预算段（3203 起） |
-| 4 | 请求里的 `user` 参数（end user）是否超预算 | `_check_end_user_model_budget`（699 起） |
-| 5-7 | key/team/end-user 的按模型预算（`model_max_budget`） | `model_max_budget_limiter` 各 `is_*_within_model_budget` |
-| 8 | token 花费是否超 team 预算 | `auth_checks.py` 系列 |
-| 9 | team 花费是否超 organization 预算 | `auth_checks.py :: common_checks`（1137 起）内的 `organization_max_budget_check`（`auth_checks.py :: organization_max_budget_check :: +0`，7588 起） |
+| key 无效/缺失/格式不对 | `ProxyException`/`HTTPException` | 401 |
+| key blocked | `ProxyException`（auth_error） | 401 |
+| 头信息预判到限流击穿 | `ProxyException` | 429 |
+| 模型不在允许列表 | `ProxyException` | 403 |
+| 预算超限 | `ProxyException`（预算类错误码） | 429 |
+| 请求体带禁带参数 | `ValueError` → 包装为 400 | 400 |
 
-实际执行分两段。构建器内 `validate_resolved_virtual_key` 先跑 key 身份侧的检查：blocked 检查之后 `_normalize_model_for_auth`（调用点 3143），`_prefetch_referenced_auth_objects`（调用点 3144），再用 `budget_served_model` 算出零成本豁免的模型并经 `litellm/proxy/auth/auth_checks.py :: request_skips_budget_checks :: +0`（1123 起）得 `skip_budget_checks`（调用点 3196-3203）。模型访问与预算预留这一段统一收敛到 `_authorize_authenticated_request`（`user_api_key_auth.py :: _authorize_authenticated_request :: +0`，4329 起）：它先 `RouteChecks.should_call_route` 做禁用路由检查，再调 `enforce_key_and_fallback_model_access`（调用点 4382），最后进 `run_centralized_common_checks`（`user_api_key_auth.py :: run_centralized_common_checks :: +0`，3707 起，调用点 4432）。`_should_skip_budget_checks`（`user_api_key_auth.py :: _should_skip_budget_checks :: +0`，4282 起）已改 **async**，内部同样经 `budget_served_model`（调用点 4299）换算模型再调 `request_skips_budget_checks`，调用处在 `run_centralized_common_checks` 内（4031 行附近）。
+异常到 HTTP 的翻译在 `litellm/proxy/auth/auth_exception_handler.py :: UserAPIKeyAuthExceptionHandler :: handle_authentication_error() :: +0`。构建器里 key 不存在时会给格式提示（`sk-` 前缀、JWT 形态），但代码强调错误类型不能依赖 message 文本判断。
 
-模型访问检查的核心在 `litellm/proxy/auth/auth_checks.py :: _can_object_call_model :: +0`（4983 起），支持通配（`*`、`anthropic/*` 这类 fnmatch 模式）与 model group 展开。另一个含义是限流不在鉴权里做：TPM/RPM/并发的扣减由 pre-call hook `parallel_request_limiter_v3` 完成（见第三层第 3 篇），鉴权只把限流上限带出来放进 `UserAPIKeyAuth`。分工原因是限流需要「请求结束归还」的生命周期，与鉴权的「校验即结束」不同。
-
-## auth prefetch 与冷却预读
-
-`validate_resolved_virtual_key` 在解析出 token 后调用 `_prefetch_referenced_auth_objects`（`user_api_key_auth.py :: _prefetch_referenced_auth_objects :: +0`，4500 起，调用点 3144），一次 MGET 把后续校验要读的 user/team/end-user 对象与花费计数器拉进缓存，并通过 `before_read=arm_routing_cooldowns` 把路由冷却预读挂进同一趟往返。`arm_routing_cooldowns`（`user_api_key_auth.py :: arm_routing_cooldowns :: +0`，4517 起）仅在 auth prefetch 真正读 Redis 时武装：通过 `RoutingContext(llm_router).arm_cooldown_prefetch()`（`litellm/router_api.py :: RoutingContext :: arm_cooldown_prefetch :: +0`，类 1816 起、方法 1978 起）把路由层冷却预读进 native 往返，从内存命中或被拒的请求不提前读冷却。
-
-## 请求体凭证清洗（spec 行为变化，#51254）
-
-鉴权不止查 key，还清洗请求体里可能偷走管理员凭证或重定向出口的字段。入口是 `litellm/proxy/auth/auth_utils.py :: is_request_body_safe :: +0`（973 起），由 `run_centralized_common_checks` 在推迟的模型体检查处调用（`user_api_key_auth.py` 调用点 3753）。
-
-三个组成部分：
-
-| 符号 | 锚点 | 作用 |
-|---|---|---|
-| `_BANNED_REQUEST_BODY_PARAMS` | `auth_utils.py :: _BANNED_REQUEST_BODY_PARAMS :: +0`（498 起） | 请求体禁带参数表：`api_base`/`base_url` 重定向、AWS 身份选择器（`aws_profile_name`/`aws_session_name`/`aws_external_id` 等）、Azure Entra 凭证（`azure_ad_token` + `auth_utils.py :: _AZURE_ENTRA_CREDENTIAL_PARAMS :: +0`，392 起）、endpoint 重定向字段（`s3_endpoint_url`、`sagemaker_base_url`、`deployment_url`）、可观测性凭证（由 `_build_banned_observability_params` 派生）。Azure Entra 字段是 #51254 新增 |
-| `_reject_secret_references` | `auth_utils.py :: _reject_secret_references :: +0`（598 起） | 值以 `os.environ/` 或 `oidc/` 开头即拒（`_SECRET_REFERENCE_PREFIXES`，592 起），检查范围是 `_SECRET_RESOLVING_PARAMS`（593 起）= 禁带参数 + `_ADMIN_CONFIG_FIELDS_TO_CLEAR_ON_BASE_OVERRIDE` + clientside credential keys。secret reference 只允许部署或管理员配置的凭证携带 |
-| `_check_banned_params` | `auth_utils.py :: _check_banned_params :: +0`（770 起） | 统一执行点：禁带参数无管理员 opt-in（`allow_client_side_credentials` 全局或 `configurable_clientside_auth_params` 按部署）即抛 `ValueError`；旧版「调用方带了 api_key 就整表放行」的隐式旁路已删除 |
-
-api_base 重定向时的管理员字段清洗在 `litellm/litellm_core_utils/clientside_credential_handler.py :: get_dynamic_litellm_params :: +0`（94 起）：调用方把 `api_base`/`base_url` 指向自己的主机时，`_ADMIN_CONFIG_FIELDS_TO_CLEAR_ON_BASE_OVERRIDE`（`clientside_credential_handler.py :: _ADMIN_CONFIG_FIELDS_TO_CLEAR_ON_BASE_OVERRIDE :: +0`，84 起）列出的管理员字段（organization、extra_body、region、token、vertex、aws 等）先整组弹出，再只在调用方重新提供时写回，防止调用方用「回显字段名」保留管理员值发往重定向后的上游。若部署的 `api_key` 是 `oidc/` secret reference，直接抛 `BadRequestError`（要求调用方随自定义 api_base 带自己的 key）。
-
-## 限流与预算的边界（容易混淆）
+## 与限流的分工（易混淆）
 
 | 机制 | 在哪触发 | 状态存哪 |
 |---|---|---|
 | 预算检查（spend ≤ max_budget） | 鉴权阶段（`_should_skip_budget_checks` 之后） | `_spend_counter_store()`（Redis 或本 worker 内存）+ Postgres |
-| TPM/RPM/并发限流 | pre-call hook 阶段 | `parallel_request_limiter_v3` + Rust store |
-| 部署级冷却 | Router 失败后 | `RoutingContext` cooldown 缓存 |
+| TPM/RPM/并发限流 | pre-call hook 阶段（03 篇） | `parallel_request_limiter_v3` + Rust store |
+| 部署级冷却 | Router 失败后（04 篇） | `RoutingContext` cooldown 缓存 |
 
-预算花费的读写走 `spend_counter_store`（`litellm/redis/stores/spend_counters`，spec 事实 14），旧的 `_spend_counter_redis_cache` 已删。
+鉴权只把限流上限带出来放进 `UserAPIKeyAuth`，不在这一步扣减。原因是限流需要「请求结束归还」的生命周期，与鉴权的「校验即结束」不同。
 
-## 返回对象
+## 调用关系表（关键边）
 
-```
-litellm/proxy/auth/user_api_key_auth.py :: _return_user_api_key_auth_obj :: +0
-```
+| 调用方 | 被调用方 | 传什么 | 返回/异常 |
+|---|---|---|---|
+| FastAPI 依赖注入 | `user_api_key_auth()` | `request` + 六个凭证 header | `UserAPIKeyAuth` / 抛 `ProxyException` |
+| `user_api_key_auth()` | `_reject_from_headers_before_reading_body()` | `request`、`api_key`、`custom_litellm_key_header`、`route` | 放行 / 抛 401、429 |
+| `user_api_key_auth()` | `_read_request_body_deferring_parse_failure()` | `request` | `(dict, ProxyException \| None)` |
+| `user_api_key_auth()` | `user_api_key_auth_builder()` | 凭证 header、`request_data`、`defer_team_checks=True` | `authenticated` |
+| `user_api_key_auth_builder()` | `validate_resolved_virtual_key()` | 请求、token、end_user 参数 | 补齐引用的 `UserAPIKeyAuth` |
+| `validate_resolved_virtual_key()` | `_normalize_model_for_auth()` / `_prefetch_referenced_auth_objects()` | request_data、valid_token | 归一后的 model / 预取的对象 |
+| `user_api_key_auth()` | `_authorize_authenticated_request()` | key 身份 + request_data + route | 授权后的 `UserAPIKeyAuth` / 抛 `ProxyException` |
+| `_authorize_authenticated_request()` | `run_centralized_common_checks()` | request_body、team/user/end_user 对象、route | `bool`（放行）/ 抛 `ProxyException` |
+| `run_centralized_common_checks()` | `auth_checks.py :: common_checks()` | request_body、team/user/end_user 对象、settings、route | `bool` |
 
-所有检查通过后，DB 行数据加上请求上下文（`request_route`、`parent_otel_span`、per-model 限流映射等）组装成 `UserAPIKeyAuth`，交给 FastAPI 注入端点函数签名。对 master key 请求，这个对象是凭空构造的全权限版本。
+## 状态变化复述
 
-## 失败出口
+进入本跳：只有 HTTP 头与未解析的 body。离开本跳：`UserAPIKeyAuth` 对象已构造（含 key 身份、归属、权限、限流上限），身份已播种到 request baggage，预算预留 `budget_reservation` 在返回前被清空（`user_api_key_auth() :: +63`），真正的预算扣减留给 post-call。请求的 `model` 已按 alias 归一（写回 `request_data`）。若头信息预判定罪或任一门禁失败，请求在此终止，不会进入跳 3。
 
-| 检查失败 | 异常 | HTTP |
+## 未确认项
+
+- `user_api_key_auth_builder()` 内 master key 与 JWT 两条分支的逐行实现未读取，不臆测，本篇只描述分岔判据与结论。
+- `run_centralized_common_checks` 到 `auth_checks.py :: common_checks()` 之间的中间调用层未逐行读完，检查项清单转写自 `common_checks` 的 docstring，属 `[推断]`：两者检查项一致，但中间可能还有一层参数整形。
+- `handle_authentication_error` 内部状态码映射未逐行读取，不臆测。
+
+## 源码索引
+
+| 符号 | 文件 :: 符号 | 绝对定义行 |
 |---|---|---|
-| key 无效/缺失 | `ProxyException`/`HTTPException` | 401 |
-| 模型不在允许列表 | `ProxyException` | 403 |
-| 预算超限 | `ProxyException`（预算类错误码） | 429 |
-| key 只能访问特定路由 | `ProxyException` | 403 |
-
-异常到 HTTP 的翻译在 `litellm/proxy/auth/auth_exception_handler.py :: UserAPIKeyAuthExceptionHandler :: handle_authentication_error() :: +0`。
+| 鉴权入口 | `litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth` | 4761 |
+| 读 body 前先拒 | `litellm/proxy/auth/user_api_key_auth.py :: _reject_from_headers_before_reading_body` | 2317 |
+| 推迟解析的 body 读取 | `litellm/proxy/auth/user_api_key_auth.py :: _read_request_body_deferring_parse_failure` | 2221 |
+| spend 计数 store | `litellm/proxy/auth/user_api_key_auth.py :: _spend_counter_store` | 4675 |
+| 身份构建器 | `litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth_builder` | 2494 |
+| key 身份侧检查 | `litellm/proxy/auth/user_api_key_auth.py :: validate_resolved_virtual_key` | 3263 |
+| 模型归一 | `litellm/proxy/auth/user_api_key_auth.py :: _normalize_model_for_auth` | 486 |
+| auth prefetch | `litellm/proxy/auth/user_api_key_auth.py :: _prefetch_referenced_auth_objects` | 4696 |
+| 冷却预读武装 | `litellm/proxy/auth/user_api_key_auth.py :: arm_routing_cooldowns` | 4713 |
+| 服务所用模型 | `litellm/proxy/auth/user_api_key_auth.py :: budget_served_model` | 374 |
+| 授权段 | `litellm/proxy/auth/user_api_key_auth.py :: _authorize_authenticated_request` | 4504 |
+| 模型门禁 | `litellm/proxy/auth/user_api_key_auth.py :: enforce_key_and_fallback_model_access` | 5045 |
+| 集中公共检查 | `litellm/proxy/auth/user_api_key_auth.py :: run_centralized_common_checks` | 3877 |
+| 预算豁免开关 | `litellm/proxy/auth/user_api_key_auth.py :: _should_skip_budget_checks` | 4456 |
+| 返回对象组装 | `litellm/proxy/auth/user_api_key_auth.py :: _return_user_api_key_auth_obj` | 4878 |
+| 公共检查实现 | `litellm/proxy/auth/auth_checks.py :: common_checks` | 1152 |
+| 预算豁免判定 | `litellm/proxy/auth/auth_checks.py :: request_skips_budget_checks` | 1123 |
+| 请求体安全 | `litellm/proxy/auth/auth_utils.py :: is_request_body_safe` | 973 |
+| 凭证对象类型 | `litellm/types/proxy/auth/user_api_key_auth.py :: UserAPIKeyAuth` | 132 |

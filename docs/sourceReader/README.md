@@ -2,7 +2,7 @@
 
 一套面向新手的 LiteLLM 源码文档库：从系统骨架读到函数级实现，每一处结论都可以回到源码定位验证。
 
-- 基线：`upstream/main @ 0608a41a07`（2026-11-12 快照，上游 392 commit 之上的全量重生成）。代码是唯一事实来源，若文档与代码冲突，以代码为准
+- 基线：`workspace HEAD @ 411b64dc7a`（2026-11-14 全量重生成）。代码是唯一事实来源，若文档与代码冲突，以代码为准
 - 主 traced 场景：AI Gateway（Proxy）收到 `POST /v1/chat/completions`，路由到 OpenAI `gpt-4o-mini` 并返回
 
 ## 阅读路线

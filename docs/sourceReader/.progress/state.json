@@ -1,29 +1,25 @@
 {
   "library": "docs/sourceReader",
-  "baseline_commit": "89632ca1be",
-  "baseline_subject": "upstream/main @ 89632ca1be (2026-11-13; +110 commits over 3f4dc93b40)",
-  "generated": "2026-11-12",
-  "refresh": {
-    "date": "2026-11-13",
-    "action": "fork sync + incremental refresh",
-    "upstream_commits_rebased": 110,
-    "arch_change": "litellm-rust->litellm/rust, native redis stores for router usage/health/pins, RedisBatch removed",
-    "covered": [
-      "rate-limiter saturation-from-redis #51519",
-      "pre-body reject logging #51525",
-      "customer-hierarchy budgets #51489",
-      "annual budget reset #51508"
-    ]
+  "baseline_commit": "411b64dc7a",
+  "baseline_subject": "workspace HEAD @ 411b64dc7a (89632ca1be..HEAD 间 litellm/ 源码零改动，仅文档/脚本 commit)",
+  "generated": "2026-11-14",
+  "rebuild_2026_11_14": {
+    "action": "full regeneration (形态A 四层文档库)",
+    "reason": "source-doc-4layer skill 方法论更新，按新版规范全量重生成",
+    "scope": "整个 litellm（SDK + Proxy Gateway 双形态）",
+    "traced_scenario": "AI Gateway 收 POST /v1/chat/completions，路由到 OpenAI gpt-4o-mini 并返回",
+    "retrieval": "L1 codegraph_explore 优先（有 .codegraph 索引），L0 Grep/Read 回落，L2 sr_tools.py 写引用与验收",
+    "layers": {
+      "1-skeleton": { "count": 4, "status": "completed", "date": "2026-11-14" },
+      "2-walkthrough": { "count": 2, "status": "completed", "date": "2026-11-14" },
+      "3-deep-dive": { "count": 8, "status": "completed", "date": "2026-11-14" },
+      "4-function-reference": { "count": 13, "status": "completed", "date": "2026-11-14" }
+    }
   },
-  "layers": {
-    "1-skeleton": 4,
-    "2-walkthrough": 2,
-    "3-deep-dive": 8,
-    "4-function-reference": 13
-  },
-  "refresh_2026_11_12": "全量重生成：392 上游 commit rebase；7 篇 router 文档重写为 Rust 决策链；新增 13-rust-router-core；行为变化清单全写入；verify --symbols 全库 0 硬伤",
+  "verify_2026_11_14": "全库 27 篇 sr_tools verify --symbols 全 OK：硬伤=0、@行号=0、疑似失效=0、符号级问题=0；残留仅分类豁免（裸名/尾段缩写/说明性引用）",
   "spec": ".progress/UPDATE-SPEC.md",
   "tools": ".progress/sr_tools.py",
   "verification": "VERIFY.md",
-  "refresh_2026_11_13": "fork 同步 + 增量刷新：main ff 到 89632ca1be；文档分支 rebase 到最新上游；补 #51519（饱和值走 Redis）与 #51525（先头拒绝留日志）"
+  "phases": "pending → evidence_collected → outlined → drafted → verified → completed",
+  "note": "旧库 27 篇四层结构与主场景经复核仍成立，沿用目录骨架；每篇正文按新 skill 重写（codegraph 复核锚点 + 事实红线四标记 + 每篇≥1图 + 先需求后技术）"
 }

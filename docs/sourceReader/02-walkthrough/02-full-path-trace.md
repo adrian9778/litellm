@@ -1,262 +1,221 @@
 # 全路径追踪：从 curl 到 JSON 响应
 
 > 所属层级：第二层（真实全路径） | 建议阅读顺序：6
+> 本篇基准提交：`411b64dc7a`（工作区当前 HEAD）
 
-沿着上一章的 curl 请求走完全程。每一跳给出：源码位置（按「文件 :: 类/函数 :: 偏移」规范）、进出数据、关键判断。数据形态用 `→` 标注演变。
+沿上一篇的 curl 走完全程。只走主成功路径，每跳给出源码锚点（`文件 :: 类/函数 :: 偏移`，`+0` 是定义行）、进出数据与数据形态变化；偏移数值已用 codegraph 与定点 grep 回核到当前基线。分支、重试、错误传播留到第三层。
 
-## 跳跃总图
+## 全路径时序图
 
-```
-curl ─▶ [1]FastAPI ─▶ [2]鉴权 ─▶ [3]读body+注metadata ─▶ [4]pre-call
-     ─▶ [5]route_request ─▶ [6]Router门面→RustCore选路 ─▶ [7]重试/fallback + PythonHost回Python
-     ─▶ [8]acompletion ─▶ [9]sync completion() ─▶ [10]OpenAI变换+HTTP
-     ─▶ [11]响应回传 ─▶ [12]成本+日志+响应头 ─▶ JSON
-```
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as curl
+    participant PS as proxy_server.py<br/>chat_completion
+    participant AU as auth/user_api_key_auth.py<br/>user_api_key_auth
+    participant CR as common_request_processing.py<br/>ProxyBaseLLMRequestProcessing
+    participant RR as route_llm_request.py<br/>route_request
+    participant RT as router.py<br/>Router
+    participant RC as router_rust/core.py<br/>RustCore/_Driver
+    participant PH as router_python_host.py<br/>PythonHost
+    participant MA as main.py<br/>acompletion/completion
+    participant OC as llms/openai/openai.py<br/>OpenAIChatCompletion
+    participant UP as api.openai.com
 
-下方为逐跳的 ASCII 序列图（方框 = 源码文件 :: 符号，箭头 = 数据流转）：
-
-```
-curl
-  │  HTTP POST /v1/chat/completions
-  ▼
-[1] proxy_server.py :: chat_completion           路由匹配（4 个路径共用）
-  │  read_request_body → data: dict
-  ▼
-[2] auth/user_api_key_auth.py :: user_api_key_auth    鉴权依赖（函数体之前）
-  │  Authorization 头 → UserAPIKeyAuth 对象
-  ▼
-[3] proxy_server.py :: chat_completion  (+31)  读 body + 注入 metadata
-  │  data["metadata"]["user_api_key_*"] = ...
-  ▼
-[4] common_request_processing.py :: base_process_llm_request
-  │   ├─ _within_total_timeout（外层，total_timeout 408 拦截）
-  │   └─ _process_llm_request
-  │        └─ common_processing_pre_call_logic：call_id、pre_call_hook、add_litellm_data_to_request、Logging 对象
-  ▼
-[5] common_request_processing.py :: _process_llm_request (+86) → route_llm_request.py :: route_request
-  │  按 route_type 查表，绑定 llm_router.acompletion 返回协程
-  ▼
-[6] router.py :: Router（门面，纯转发）
-  │  __init__ 时 make_core → router_core.py :: make_core
-  │   → router_rust/core.py :: RustCore.build → RustCore.acompletion
-  │   → router_rust/invoke/endpoints.py :: RustEndpoints.acompletion
-  │   → RustCore._drive → _run_steps（进程内选路步骤：select / attempt / allow_fallback）
-  │
-  │  选路步骤 host 侧：selection.py :: StrategySelectors / prerouting.py（有状态 LB 与 pre-routing）
-  ▼
-[7] router_rust/core.py :: _Driver.attempt / _routed_attempt
-  │  重试（RustRetries）/ fallback（RustFallbacks）都在 Rust core
-  │  provider 调用：_Driver._routed_attempt → PythonHost.invoke("acompletion")
-  ▼
-[8] router_python_host.py :: PythonHost.invoke → litellm.acompletion（main.py :: acompletion）
-  │  同步 completion() 丢线程池：run_in_executor
-  ▼
-[9] litellm_core_utils/get_llm_provider_logic.py :: get_llm_provider
-  │  main.py :: completion：按 custom_llm_provider 分发 → openai 分支 openai_chat_completions.completion
-  ▼
-[10] llms/openai/openai.py :: OpenAIChatCompletion.completion → acompletion
-  │   make_openai_chat_completion_request → openai_aclient.post("/chat/completions")
-  │   （官方 OpenAI SDK 客户端，raw post 以便拿响应头）
-  ▼
-[11] 响应原路返回：_routed_attempt → _process_llm_request 提取 hidden_params
-  ▼
-[12] cost_calculator.py :: completion_cost + litellm_logging 回调
-  │   common_request_processing.py :: ProxyBaseLLMRequestProcessing.get_custom_headers
-  ▼
-JSON + x-litellm-* 头
+    C->>PS: POST /v1/chat/completions
+    PS->>AU: Depends(user_api_key_auth)
+    AU-->>PS: UserAPIKeyAuth
+    PS->>PS: read_request_body + metadata 注入
+    PS->>CR: base_process_llm_request(route_type="acompletion")
+    CR->>CR: _within_total_timeout / _pre_call_with_fallbacks
+    CR->>RR: route_request(data, route_type)
+    RR->>RT: getattr(llm_router, "acompletion")(**data)
+    RT->>RC: RustCore.acompletion → RustEndpoints._routed_acompletion
+    RC->>RC: _run_steps 循环（select / pre_route / attempt）
+    RC->>PH: host.invoke("acompletion")(**compacted)
+    PH->>MA: litellm.acompletion
+    MA->>MA: get_llm_provider → run_in_executor(completion)
+    MA->>OC: openai_chat_completions.completion(acompletion=True)
+    OC->>UP: openai_aclient.post("/chat/completions")
+    UP-->>OC: OpenAI JSON
+    OC-->>MA: ModelResponse
+    MA-->>RC: ModelResponse（带 _hidden_params）
+    RC-->>CR: 响应 + success 计数
+    CR->>CR: post_call_success_hook / finalize cost / get_custom_headers
+    CR-->>PS: 响应 + x-litellm-* 头
+    PS-->>C: JSON
 ```
 
-## 跳 1：HTTP 进入，路由匹配
+## 逐跳拆解
 
-```
-litellm/proxy/proxy_server.py :: chat_completion() :: +0
-```
+### 跳 1：HTTP 进入，路由匹配
 
-FastAPI 按 `@router.post("/v1/chat/completions", dependencies=[Depends(user_api_key_auth)])` 匹配请求。装饰器有四层（`/v1/chat/completions`、`/chat/completions`、`/engines/{model}/...`、`/openai/deployments/{model}/...`），四个路径共用这一个函数。
+锚点：`litellm/proxy/proxy_server.py :: chat_completion() :: +0`
 
-- 进：HTTP 报文
-- 出：`Request` 对象 + 一个待执行的鉴权依赖
+FastAPI 按装饰器上的路径匹配请求。这个函数同时挂在四条路径上：`/v1/chat/completions`、`/chat/completions`、`/engines/{model}/...`、`/openai/deployments/{model}/...`，四个路径共用一个函数体。
 
-**关键点**：`Depends(user_api_key_auth)` 让鉴权在函数体之前执行，函数签名里的 `user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)`（`chat_completion` 的签名，13362 行）就是鉴权结果。
+- 进：HTTP 报文（headers + body）
+- 出：`Request` 对象、`fastapi_response` 对象，以及一个待执行的鉴权依赖
 
-## 跳 2：鉴权
+关键点：装饰器上的 `dependencies=[Depends(user_api_key_auth)]` 与签名里的 `user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)`（`chat_completion() :: +4`）让鉴权在函数体第一行之前就跑完，函数体拿到的已经是鉴权结果。
 
-```
-litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth() :: +0
-```
+### 跳 2：鉴权
 
-- 进：`Authorization: Bearer sk-litellm-master-...`
-- 出：`UserAPIKeyAuth` 对象（api_key、user_id、team_id、org_id、模型权限等）
+锚点：`litellm/proxy/auth/user_api_key_auth.py :: user_api_key_auth() :: +0`
 
-master key 走的是最短路径：比对出是根凭证后直接构造全权限的 `UserAPIKeyAuth`。普通 key 则要查缓存（`user_api_key_cache`）或 Postgres，然后做预算/模型访问/限流前置检查。预算按「服务所用模型」计算（`litellm/proxy/auth/user_api_key_auth.py :: budget_served_model`，365 行起；`_normalize_model_for_auth`，477 行起）。细节在第三层第 2 篇展开。
+- 进：`Authorization: Bearer $LITELLM_MASTER_KEY`
+- 出：`UserAPIKeyAuth` 对象（`api_key`、`user_id`、`team_id`、`org_id`、模型权限等）
 
-**失败出口**：任何检查不过 → 抛 `ProxyException` → FastAPI 返回 401/403/429，请求到此结束。
+master key 走最短路径：比对出这是根凭证后直接构造全权限的 `UserAPIKeyAuth`。普通 key 则要查缓存或数据库，再做预算、模型访问、限流前置检查。失败出口是抛 `ProxyException`，由 FastAPI 翻成 401/403/429，请求到此结束。鉴权细节在第三层 auth 篇展开。
 
-## 跳 3：读 body，注入元数据
+### 跳 3：读 body，注入 metadata
 
-```
-litellm/proxy/proxy_server.py :: chat_completion() :: +31     # read_request_body 调用（13389 行）
-litellm/proxy/proxy_server.py :: chat_completion() :: +32     # metadata 注入开始（13390 行起）
-```
+锚点：`litellm/proxy/proxy_server.py :: chat_completion() :: +31`（`read_request_body` 调用）、`:: +32`（metadata 注入开始）
 
 - 进：原始 HTTP body
 - 出：`data: dict`（OpenAI 请求格式）+ 注入后的 `data["metadata"]`
 
-```
+读 body 的实现在 `litellm/proxy/common_utils/http_parsing_utils.py :: read_request_body() :: +0`，它按 content-type 分流（二进制、表单、JSON），JSON 分支用 `orjson` 解析并缓存到 request 上。
+
 data 形态变化：
+
+```text
 {"model": "gpt-4o-mini", "messages": [...]}
 → metadata 注入后：
 {"model": "gpt-4o-mini", "messages": [...],
- "metadata": {"user_api_key_user_id": "...", "user_api_key_team_id": "...", ...}}
+ "metadata": {"user_api_key_user_id": "...", "user_api_key_team_id": "...",
+              "user_api_key_org_id": "...", "user_api_key_org_alias": "..."}}
 ```
 
-读 body 的实现在 `litellm/proxy/common_utils/http_parsing_utils.py :: read_request_body() :: +0`。
+注入的字段逐一来自 `UserAPIKeyAuth`（`chat_completion() :: +38` 到 `+47`），只有对应的属性非 None 才写进去。
 
-## 跳 4：Pre-call 处理
+### 跳 4：构造处理对象，进入 base_process_llm_request
 
-```
-litellm/proxy/proxy_server.py :: chat_completion() :: +51        # base_process_llm_request 调用（13409 行）
-litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: base_process_llm_request() :: +0
-litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: _process_llm_request() :: +0
-```
+锚点：`litellm/proxy/proxy_server.py :: chat_completion() :: +49`（`ProxyBaseLLMRequestProcessing(data=data)`）、`:: +51`（`base_process_llm_request` 调用）
+被调方：`litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: base_process_llm_request() :: +0`
 
-调用链：`chat_completion` → `base_process_llm_request`。`base_process_llm_request` 在最外层包了 `total_timeout` 拦截（`_within_total_timeout`，3219 行），再包 SSE keepalive（`open_sse_before_first_byte`，模块级函数，1719 行起），真正的骨架在 `_process_llm_request`，再往里是 `common_processing_pre_call_logic`：
+`base_process_llm_request` 自己不干活，它把真正的工作包了两层再委托出去：
 
-```
-litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: common_processing_pre_call_logic() :: +0
-```
+| 包裹层 | 锚点 | 作用 |
+|---|---|---|
+| 外层 SSE keepalive | `common_request_processing.py :: open_sse_before_first_byte() :: +0`（模块级函数，`+0` 行 1723） | 上游没回第一个字节前先给客户端发 SSE 心跳，免得时间到首 token 太久连接闲死。本场景非流式，这条路径不启用 |
+| 中层 total_timeout | `ProxyBaseLLMRequestProcessing :: _within_total_timeout() :: +0` | 对带 `total_timeout`（body 字段或 `x-litellm-total-timeout` 头）的非流式请求挂一个总截止时间，超时抛 `ProxyException` 408 |
+| 内层真骨架 | `ProxyBaseLLMRequestProcessing :: _process_llm_request() :: +0` | pre-call、路由、gather、post-call 全在这里 |
 
-`_process_llm_request` 在非跳过 pre-call 时走 `_pre_call_with_fallbacks`（3345 行，+43），后者进入 `common_processing_pre_call_logic`。这一步做四件事，顺序固定：
+- 进：`data` dict、`route_type="acompletion"`、`llm_router`、`user_api_key_dict`、`general_settings`、`proxy_config` 等
+- 出：最终响应对象（本场景是 `ModelResponse`）或 SSE 流
+
+### 跳 5：pre-call 处理
+
+锚点：`common_request_processing.py :: ProxyBaseLLMRequestProcessing :: _process_llm_request() :: +43`（`_pre_call_with_fallbacks` 调用，行 3350）
+被调方：`common_request_processing.py :: ProxyBaseLLMRequestProcessing :: _pre_call_with_fallbacks() :: +0`，进而进入 `common_processing_pre_call_logic() :: +0`（行 2573）
+
+这一步按固定顺序做四件事：
 
 | 顺序 | 动作 | 代码锚点 |
 |---|---|---|
-| 1 | 注入 `litellm_call_id`（若客户端带了 `x-litellm-call-id` 头则复用） | `common_processing_pre_call_logic()` 内 `resolve_litellm_call_id`（`litellm/proxy/common_request_processing.py :: resolve_litellm_call_id`，387 行） |
-| 2 | 执行 `litellm_settings.callbacks` 里各 hook 的 `async_pre_call_hook` | `proxy_logging_obj.pre_call_hook` |
-| 3 | `add_litellm_data_to_request`：把 key/team/用户信息、默认参数写进 data | `litellm/proxy/litellm_pre_call_utils.py :: add_litellm_data_to_request() :: +0`（2692 行） |
-| 4 | 构造 `Logging` 对象放进 `data["litellm_logging_obj"]` | `common_processing_pre_call_logic()` 内（2812 行起） |
+| 1 | 注入 `litellm_call_id`（客户端带了 `x-litellm-call-id` 头则复用） | `common_request_processing.py :: resolve_litellm_call_id() :: +0`（行 388） |
+| 2 | 跑各回调的 `async_pre_call_hook` | `proxy_logging_obj.pre_call_hook` |
+| 3 | 把 key/team/用户信息、默认参数写进 data | `litellm/proxy/litellm_pre_call_utils.py :: add_litellm_data_to_request() :: +0`（行 2707） |
+| 4 | 构造 `Logging` 对象放进 data | `common_processing_pre_call_logic()` 内 |
+
+返回值是 `(self.data, logging_obj)`，`_process_llm_request` 用它替换自己的 `self.data`（`_process_llm_request() :: +44`，行 3350 的赋值）。
 
 - 进：`data` dict
 - 出：增强后的 `data` + `logging_obj`（回调管线引擎）
 
-**行为变化（写进这一跳）**：消息校验在 pre-call 之前/期间对 OpenAI 路径做。缺 `role` 的消息由 `litellm/utils.py :: validate_and_fix_openai_messages() :: +0`（9496 行）归一化后交给 `validate_chat_completion_user_messages`（9573 行），后者对无 `role` 的条目抛 `MissingMessageRoleError`（`litellm/exceptions.py` 372 行，`BadRequestError` 子类，HTTP 400）。这是 #51124 的 BREAKING 行为：不再自动补 `role`。
+紧跟着非流式请求会设 `logging_obj.defer_async_logging = True`（`_process_llm_request() :: +64`，行 3371），让成功日志延后到响应发出之后再刷，并且立刻起一个 `during_call_hook` 的并行任务（`_process_llm_request() :: +67` 到 `+77`）。
 
-## 跳 5：route_request 拿协程
+### 跳 6：route_request 拿协程
 
-```
-litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: _process_llm_request() :: +86    # route_request 调用（3388 行）
-litellm/proxy/route_llm_request.py :: route_request() :: +0
-```
+锚点：`common_request_processing.py :: ProxyBaseLLMRequestProcessing :: _process_llm_request() :: +86`（`route_request` 调用，行 3393）、`:: +93`（`asyncio.create_task`，行 3400）
+被调方：`litellm/proxy/route_llm_request.py :: route_request() :: +0`
 
-- 进：`(data, route_type="acompletion", llm_router)`
+- 进：`(data, route_type="acompletion", llm_router, user_model, user_api_key_dict)`
 - 出：`llm_call`，一个尚未执行的协程
 
-`route_request` 内部按 `route_type` 查表，把 `llm_router.acompletion` 绑定上参数（`litellm/proxy/route_llm_request.py :: _route_request_single_attempt`，878 行，按分支 `getattr(llm_router, "acompletion")(**data)`）。函数内先 `enforce_total_timeout_scope(data)`（842 行，+10）：对 body 带 `total_timeout` 的非流式请求，把超时作用域挂进当前上下文。函数上方注释强调 "Do not change this - it should be a constant time fetch - ALWAYS"。随后回到 `_process_llm_request`：
+`route_request` 先调 `enforce_total_timeout_scope(data)`（`route_request() :: +10`，行 842，实现在 `litellm/litellm_core_utils/total_deadline.py :: enforce_total_timeout_scope() :: +0`，行 162）把超时作用域挂进当前上下文，再进 `_route_request_single_attempt() :: +0`（行 878）。后者做一轮 body 校验与 mock 参数门控后，用 getattr 派发：
 
 ```python
-llm_call_task: Final = asyncio.create_task(with_proxy_compaction_executor(llm_call, request))
+return getattr(llm_router, f"{route_type}")(**data)
 ```
 
-（`_process_llm_request() :: +93`，3395 行）真正的调度从这一刻开始。
+（`_route_request_single_attempt() :: +34`，行 912 附近的动态派发点）
 
-## 跳 6：Router 门面与 Rust 核心选路
+于是实际调用的是 `Router.acompletion(**data)`，返回值是一个 awaited 后才发力的协程。回到 `_process_llm_request`，它把协程包进 `asyncio.create_task(with_proxy_compaction_executor(llm_call, request))`，与 `during_call_hook` 一起 `asyncio.gather`（`_process_llm_request() :: +96`，行 3403）。真正的调度从这一刻开始。
 
-旧文这一段引用 `router_python_core.py :: PythonCore`，该文件已被删除（双核时代 #50178 终结）。现在是一条门面委托到 Rust 核心的路径：
+### 跳 7：Router 门面把请求交给 Rust 核心
 
-```
-litellm/router.py :: Router :: __init__() :: +0                       # 门面：__init__ 只 attach(make_core(...))
-litellm/router_core.py :: make_core() :: +0                           # 无条件 RustCore.build
-litellm/router_rust/core.py :: RustCore :: build() :: +0              # pyo3 句柄构造
-litellm/router_rust/core.py :: RustCore :: acompletion() :: +0        # 端点方法，转发给 _endpoints
-litellm/router_rust/invoke/endpoints.py :: RustEndpoints :: acompletion() :: +0   # 拆 model、选调度或 drive
-litellm/router_rust/core.py :: RustCore :: _drive() :: +0             # 驱动一次调用
-litellm/router_rust/core.py :: RustCore :: _run_steps() :: +0         # 步骤循环
-litellm/router_rust/steps/selection.py :: StrategySelectors :: pick_async() :: +0   # 有状态 LB 留在宿主 step
-```
+锚点：`litellm/router.py :: Router :: __init__() :: +0`（行 418）、`litellm/router_core.py :: make_core() :: +0`（行 51）、`litellm/router_rust/core.py :: RustCore :: build() :: +0`（行 1594）
 
-- 进：`data`（model="gpt-4o-mini"）
-- 出：1 个 deployment（含 `litellm_params`：model 字符串、api_key、api_base…）
+`Router` 是纯门面：`__init__` 只做 `self._attach(make_core(build_router_config(router_arguments(*args, **kwargs)), python_host))`（`Router.__init__() :: +1`，行 419），成员读写都转发给 `_core`，并禁止子类化。`make_core` 无条件 `RustCore.build(config, host)`（`make_core() :: +2`，行 54）。旧的双核时代（`router_python_core.py`、`PythonCore`、`Route.ROUTER`）已被删除。
 
-`Router` 是纯门面（`litellm/router.py` 410 行起）：`__init__` 只做 `self._attach(make_core(build_router_config(...)))`（419 行），成员读写都转发 `_core`，禁子类化（`__init_subclass__` 直接 `TypeError`）。`make_core`（`litellm/router_core.py :: make_core`，51 行，全文件 55 行）无条件 `RustCore.build`。
+请求进来后的委托链：
 
-`RustCore.acompletion`（`litellm/router_rust/core.py` 2547 行）把请求交给 `RustEndpoints.acompletion`（`litellm/router_rust/invoke/endpoints.py` 1998 行），后者在 `_routed_acompletion`（2012 行）拆 `priority`：无优先级时 `await self._core.drive(plan, rest)`。`_drive`（2880 行）构建一次 `RouterCall`，`_run_steps`（2930 行）对步骤循环，每步由宿主（Python）应答。选路步骤（`select`）在宿主侧 `_answer_select`（3393 行）执行，走 `litellm/router_rust/steps/selection.py :: StrategySelectors`；有状态 LB 与 pre-routing 步骤在 `router_rust/steps/`（prerouting.py、selection.py）。
+| 调用方 | 被调用方 | 做什么 |
+|---|---|---|
+| `route_request` 的 getattr 派发 | `litellm/router_rust/core.py :: RustCore :: acompletion() :: +0`（行 2628） | 把 args/kwargs 打包成 request 映射 |
+| `RustCore.acompletion` | `litellm/router_rust/invoke/endpoints.py :: RustEndpoints :: acompletion() :: +0`（行 2016） | 补 `stream` 默认值、记开始时间 |
+| `RustEndpoints.acompletion` | `RustEndpoints :: _routed_acompletion() :: +0`（行 2030） | 拆 `priority`；无优先级时 `await self._core.drive(plan, rest)`（`+19`，行 2049） |
+| `_routed_acompletion` | `litellm/router_rust/core.py :: RustCore :: _drive() :: +0`（行 2964，公开包装 `drive()` 在行 1394） | 构建一次 `RouterCall` |
+| `_drive` | `litellm/router_rust/core.py :: RustCore :: _run_steps() :: +0`（行 3017） | 对 Rust 侧返回的步骤循环 |
 
-单部署场景下选部署几乎是直通的，但流程一样不少：
+- 进：`data`（`model="gpt-4o-mini"`、messages、metadata、litellm_params 等）
+- 出：一个被选中的 deployment（含 `model_name` 与 `litellm_params`：model 字符串、api_key、api_base 等）
 
-```
-model="gpt-4o-mini"
-→ registry 查 group → [deployment#1]
-→ 过滤冷却部署（cooldown）
-→ 策略（selection.py 的 selector）选中 deployment#1
-```
+`_run_steps` 的循环体是一个 match（`_run_steps() :: +12` 到 `+35`，行 3029-3052）：每轮 `call.next(outcome)` 拿一步，按 `kind` 分派给 `attempt`、`sleep`、`allow_fallback`、`cache`、`select`、`pre_route`、`done`、`failed`。选部署的 `select` 步骤在宿主侧应答（`litellm/router_rust/core.py :: _answer_select() :: +0`，行 3483），走 `litellm/router_rust/steps/selection.py` 的 selector；选完后还有一轮 pre-call 检查 `litellm/router_rust/steps/selection.py :: routing_pre_call_checks() :: +0`（行 353）。单部署场景下选路几乎直通，但流程一样不少：查 group、过滤冷却部署、selector 选中、pre-call 检查放行。
 
-**行为变化（写进这一跳）**：预路由 host 侧会先跑 `pre_route` 步骤；选部署的尝试会做 pre-call 检查（`litellm/router_rust/steps/selection.py :: routing_pre_call_checks`，350 行）。
+### 跳 8：一次 attempt，经 PythonHost 回到 Python
 
-## 跳 7：重试 / fallback 与回 Python 执行
+锚点：`litellm/router_rust/core.py :: _Driver :: attempt() :: +0`（行 5221）、`litellm/router_rust/core.py :: _Driver :: _routed_attempt() :: +0`（行 5244）、`litellm/router_python_host.py :: PythonHost :: invoke() :: +0`（行 60 声明、行 107 实现）
 
-```
-litellm/router_rust/core.py :: _Driver :: attempt() :: +0            # 一次尝试（5214 行）
-litellm/router_rust/core.py :: _Driver :: _routed_attempt() :: +0     # 真正发起 provider 调用（5238 行）
-litellm/router_rust/core.py :: RustRetries :: ...                     # 重试策略 mixin
-litellm/router_rust/core.py :: RustFallbacks :: ...                   # fallback mixin
-litellm/router_python_host.py :: PythonHost :: invoke() :: +0         # 回 Python 执行
-```
-
-重试与 fallback 的逻辑（`RustRetries`、`RustFallbacks` mixin）都在 Rust core 的 `_run_steps` 循环里：失败 → 判定是否可重试 → `set_cooldown` 记冷却 → 换部署重试 → 重试耗尽 → fallback group。`_run_steps` 内 `attempt`、`sleep`、`allow_fallback`、`select`、`pre_route` 等步骤由 `_Driver` 应答。
-
-每次尝试真正执行 provider 调用的点是 `_routed_attempt`（`litellm/router_rust/core.py` 5238 行）：
+`_run_steps` 遇到 `attempt` 步骤就调 `driver.attempt(step)`，后者进入 `_routed_attempt`。这一跳里依次发生：解析 pod、构造 `AttemptCall`、再挂一次 `enforce_total_timeout_scope(call.kwargs)`（`_routed_attempt() :: +14`，行 5258）、`compacted_attempt` 做参数压缩、`enter_deployment_slot` 占用该 deployment 的并发槽位、跑 `routing_pre_call_checks`，然后是真正的 provider 调用：
 
 ```python
-host: Final = self._core._host
-compacted: Final = await compacted_attempt(...)
-pending: Final = host.invoke(call.host_op)(**compacted)
-answered: Final = await pending if awaited else pending
+pending: Final[object] = (
+    ...
+    else host.invoke(call.host_op)(**compacted)
+)
+awaited: Final = self._plan.kind == "generic" or inspect.isawaitable(pending)
+answered: Final[object] = await pending if awaited else pending
 ```
 
-（`_routed_attempt` 内 `host.invoke` 调用，5287 行）
+（`_routed_attempt() :: +49` 到 `+53`，行 5286-5297）
 
-**架构要点**：Rust core 从不直接 `import litellm`，所有外部触达都经过 `PythonHost`（`litellm/router_python_host.py :: PythonHost :: invoke()`，107 行）。`invoke("acompletion")` 返回的就是 `litellm.acompletion`。对 chat_completions，执行层由 catalog 定为 PYTHON_ONLY，所以始终经 host 回 Python。
+架构要点：Rust core 从不直接 `import litellm`，所有外部触达都经过 `PythonHost`。`PythonHost.invoke(op)`（`router_python_host.py :: PythonHost :: invoke() :: +39`，行 107）就是 `getattr(litellm, op)`，对 `acompletion` 返回的就是 `litellm.acompletion`。执行层由 catalog 决定，chat_completions 是 PYTHON_ONLY，所以始终经 host 回 Python。
 
-**行为变化（写进这一跳）**：非流式请求的总超时（body `total_timeout` 或头 `x-litellm-total-timeout`）超时后抛 `TotalTimeoutExpired`（`litellm/litellm_core_utils/total_deadline.py :: TotalTimeoutExpired`，103 行），映射为 HTTP 408。429 限流失败会带 `rate_limited_by: descriptor_key` 响应头（`litellm/proxy/hooks/parallel_request_limiter_v3.py` 3350 行，#51228）。
+- 进：压缩后的调用参数（deployment 的 `litellm_params` 已展开成 api_key/api_base，model 仍是带前缀的字符串）
+- 出：`litellm.acompletion` 返回的协程，await 后得到 `ModelResponse`
 
-## 跳 8：main.acompletion
+### 跳 9：main.acompletion 把同步 completion 丢进线程池
 
-```
-litellm/router_python_host.py :: PythonHost :: invoke() :: +0     # 绑定 litellm.acompletion
-litellm/main.py :: acompletion() :: +0
-```
+锚点：`litellm/main.py :: acompletion() :: +0`（行 652）
 
-- 进：OpenAI 风格全参数（`model="openai/gpt-4o-mini"`、messages、**kwargs）
+- 进：OpenAI 风格全参数（`model="openai/gpt-4o-mini"`、messages、metadata、litellm_params、`**kwargs`）
 - 出：`ModelResponse`
 
-`acompletion` 做三件准备工作后进入执行：
-
-1. 若 model 是 list（多部署内联）则先归一化
-2. `get_llm_provider()` 解析 provider（见跳 9 的说明）
-3. 组装 `completion_kwargs`，然后：
+`acompletion` 做几件准备工作后进入执行：解析 `fallbacks`（`+98`，行 749）、取事件循环（`+111`，行 762），然后 `get_llm_provider()` 解析 provider（`+249`，行 901）。有显式 `fallbacks` 时走 `async_completion_with_fallbacks`（`+262`，行 914）；本场景没有，走主路径：
 
 ```python
 init_response: Final = await loop.run_in_executor(None, func_with_context)
 ```
 
-（`litellm/main.py :: acompletion() :: +293`，945 行）
+（`litellm/main.py :: acompletion() :: +293`，行 945）
 
-**反直觉但重要**：`acompletion` 把**同步**的 `completion()` 丢进线程池执行，这是当前实现里异步入口的真实路径。有显式 `fallbacks` 时才走 `async_completion_with_fallbacks`（913 行）。
+反直觉但重要：`acompletion` 把**同步**的 `completion()` 丢进线程池执行，这是当前实现里异步入口的真实路径。
 
-## 跳 9：get_llm_provider + 同步 completion 分发
+### 跳 10：get_llm_provider + 同步 completion 分发
 
-```
-litellm/litellm_core_utils/get_llm_provider_logic.py :: get_llm_provider() :: +0
-litellm/main.py :: completion() :: +0
-```
+锚点：`litellm/litellm_core_utils/get_llm_provider_logic.py :: get_llm_provider() :: +0`（行 187）、`litellm/main.py :: completion() :: +0`（行 5564）
 
-`get_llm_provider` 对 `"openai/gpt-4o-mini"` 的解析结果：
+`get_llm_provider` 对 `"openai/gpt-4o-mini"` 的解析产物：
 
-```
+```text
 model="gpt-4o-mini", custom_llm_provider="openai",
 api_key=环境变量值, api_base="https://api.openai.com/v1"（默认）
 ```
 
-`completion()`（`litellm/main.py` 5564 行）内部按 `custom_llm_provider` 走一长串 if/elif 分发。对本例的 `openai`：
+`completion()` 内部按 `custom_llm_provider` 走一长串 if/elif 分发。对本例的 `openai`：
 
 ```python
 response = openai_chat_completions.completion(
@@ -264,27 +223,23 @@ response = openai_chat_completions.completion(
 )
 ```
 
-（`litellm/main.py :: completion() :: openai 分支`，2894 行）
+（`litellm/main.py :: completion() :: openai 分支 :: +330`，行 2894）
 
-模块级单例：`litellm/main.py :: openai_chat_completions = OpenAIChatCompletion() :: +0`（358 行）。
+模块级单例：`litellm/main.py :: openai_chat_completions = OpenAIChatCompletion() :: +0`（行 358）。
 
-**执行器分工**（容易混淆的点）：
+执行器分工（容易混淆的点）：
 
 | provider | 默认执行器 |
 |---|---|
 | `openai`（本例） | `OpenAIChatCompletion`，走官方 OpenAI SDK |
-| 绝大多数其他 provider | `BaseLLMHTTPHandler`，走统一 httpx 执行器（`litellm/main.py :: base_llm_http_handler`，395 行） |
-| `openai` + 环境变量 `EXPERIMENTAL_OPENAI_BASE_LLM_HTTP_HANDLER` | 强制切到 `BaseLLMHTTPHandler`（`litellm/main.py :: completion` 内 `use_base_llm_http_handler`，2853 行） |
+| 绝大多数其他 provider | `BaseLLMHTTPHandler`，走统一 httpx 执行器（`litellm/main.py :: base_llm_http_handler`，行 395） |
+| `openai` + 环境变量 `EXPERIMENTAL_OPENAI_BASE_LLM_HTTP_HANDLER` | 强制切到 `BaseLLMHTTPHandler`（`litellm/main.py :: completion() :: use_base_llm_http_handler`，行 2853） |
 
-## 跳 10：OpenAI SDK 调用
+### 跳 11：OpenAI SDK 发起上游请求
 
-```
-litellm/llms/openai/openai.py :: OpenAIChatCompletion :: completion() :: +0
-litellm/llms/openai/openai.py :: OpenAIChatCompletion :: acompletion() :: +0
-litellm/llms/openai/openai.py :: OpenAIChatCompletion :: make_openai_chat_completion_request() :: +0
-```
+锚点：`litellm/llms/openai/openai.py :: OpenAIChatCompletion :: completion() :: +0`（行 716）、`:: acompletion() :: +0`（行 967）、`:: make_openai_chat_completion_request() :: +0`（行 550）
 
-`OpenAIChatCompletion.completion`（`litellm/llms/openai/openai.py` 716 行）在 `acompletion=True` 时委托给 `self.acompletion`（967 行），后者调 `make_openai_chat_completion_request`（550 行）。真正的上游请求是官方 OpenAI SDK 客户端发起的：
+`completion` 在 `acompletion=True` 且非 stream 时委托给 `self.acompletion`（`completion() :: +89`，行 805），后者调 `make_openai_chat_completion_request`。真正的上游请求由官方 OpenAI SDK 客户端发起：
 
 ```python
 raw_response = _raw_chat_response(
@@ -299,18 +254,20 @@ raw_response = _raw_chat_response(
 )
 ```
 
-（`make_openai_chat_completion_request` 内 `openai_aclient.post("/chat/completions")`，566 行）
+（`make_openai_chat_completion_request() :: +16`，行 565-566 附近的 `openai_aclient.post`）
 
-方法 docstring 仍写「call chat.completions.create 时 return_response_headers」等（559 行起），但当前实现用 SDK 客户端的裸 `post("/chat/completions", ...)`（`AsyncOpenAI.post`），既走官方 SDK 也保留原始响应头。OpenAI 格式的请求几乎原样透传。
+用 SDK 客户端的裸 `post` 而不是 `chat.completions.create`，既走官方 SDK 的鉴权与序列化，也保留原始响应头。OpenAI 格式的请求几乎原样透传，`provider_config.transform_request` 只在非 openai 前缀时改写 model 字符串（`completion() :: +111`，行 826 附近）。
 
-对照参考：非 OpenAI provider 在这一跳的形态是 `BaseLLMHTTPHandler.completion()` + `ProviderConfig.transform_request()/transform_response()`（如 `litellm/llms/openai/chat/gpt_transformation.py :: OpenAIGPTConfig :: transform_request() :: +0`，服务 httpx 路径），细节在第三层第 6 篇展开。
+- 进：`data` dict + `logging_obj`
+- 出：`ModelResponse`（choices/usage 齐全），上游原始 JSON 与响应头存进 `logging_obj.model_call_details`
 
-- 进：`data` dict + `logging` 对象
-- 出：`ModelResponse`（choices/usage 齐全），上游原始 JSON 存进 `logging.model_call_details`
+对照参考：非 OpenAI provider 在这一跳的形态是 `BaseLLMHTTPHandler.completion()` + `ProviderConfig.transform_request()/transform_response()`，细节在第三层 provider 篇展开。
 
-## 跳 11：回到 Router 与处理骨架
+### 跳 12：响应原路返回，Rust 核心记账
 
-响应原路返回：`OpenAIChatCompletion.acompletion` → `completion()` → `acompletion()` → `PythonHost.invoke` 返回点（跳 7）→ `_routed_attempt` 检查响应（内容审查判断 `_should_raise_content_policy_error`）→ Rust core 记 `success_calls` 并打日志 → `_run_steps` 到 `done` → `_drive.finish_async` → `_process_llm_request` 拿到 `response`。
+锚点：`litellm/router_rust/core.py :: _Driver :: _routed_attempt() :: +56`（`check_response`，行 5300）、`:: +66`（`counters.succeeded`，行 5310）、`:: +88`（`_succeeded`，行 5332）
+
+上游 `ModelResponse` 一路 `await` 回到 `_routed_attempt`：先 `check_response` 检查响应合法性，非流式时 `open_attempt_stream` 直接把响应包好，然后 `counters.succeeded` 给该 model group 记一次成功，`_succeeded` 组装 `served` 结果（含 `deferred` 标记与用量）。有 success 回调时还会跑 `repin_after_success`（会话重钉）。`_run_steps` 收到 `done` 步骤，`_drive` 收尾，控制权回到 `_process_llm_request`。
 
 `_process_llm_request` 从响应的 `_hidden_params` 里提取：
 
@@ -322,41 +279,45 @@ cache_key, api_base, response_cost = (
 )
 ```
 
-（`litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: _process_llm_request() :: +119`，3421 行起）
+（`_process_llm_request() :: +117`，行 3424-3428；`responses[1]` 取到响应本身在 `+113`，行 3419）
 
-## 跳 12：成本、日志、响应头
+### 跳 13：post-call 成本、回调与响应头
 
-```
-litellm/litellm_core_utils/litellm_logging.py :: Logging :: async_success_handler() :: +0
-litellm/cost_calculator.py :: completion_cost() :: +0
-litellm/proxy/common_request_processing.py :: ProxyBaseLLMRequestProcessing :: get_custom_headers() :: +0
-litellm/proxy/common_request_processing.py :: cost_headers() :: +0
-```
+锚点：`common_request_processing.py :: ProxyBaseLLMRequestProcessing :: _process_llm_request() :: +239`（`prepare_response_cost`，行 3655）、`:: +240`（`post_call_success_hook`，行 3656）、`:: +260`（`finalize_proxy_response_cost`，行 3666）、`:: +353`（`fastapi_response.headers.update`，行 3759）
 
-顺序与线程语义：
+顺序与语义：
 
-1. 日志管线触发 `completion_cost()`：`usage.tokens × 价目表（model_prices_and_context_window.json 里 gpt-4o-mini 单价）` → `response_cost`，写进 `_hidden_params`
-2. 各回调 `async_log_success_event` 并行执行（Langfuse 上报、Prometheus 计数…）
-3. 响应头组装：`get_custom_headers`（`litellm/proxy/common_request_processing.py` 2419 行）里 `x-litellm-call-id`、`x-litellm-model-id`（2464 行起），成本类头由 `cost_headers`（2096 行）展开出 `x-litellm-response-cost` 等
+1. `prepare_response_cost` 让 `Logging` 对象把响应成本准备好（`litellm/litellm_core_utils/litellm_logging.py :: Logging :: prepare_response_cost() :: +0`，行 2709）。
+2. `proxy_logging_obj.post_call_success_hook` 跑各回调的 `async_post_call_success_hook`（guardrail、Langfuse 上报、Prometheus 计数等）。成功事件的分发在 `litellm/litellm_core_utils/litellm_logging.py :: Logging :: async_success_handler() :: +0`（行 4271）与 `_async_success_handler_body() :: +0`（行 4289）里。
+3. 成本计算落在 `Logging.response_cost_calculator()`（行 2186）里，它调 `litellm/cost_calculator.py :: completion_cost() :: +0`（行 1797）：`usage.tokens × model_prices_and_context_window.json 里该 model 的单价` → `response_cost`，写进 `model_call_details`，并经 `_process_hidden_params_and_response_cost()`（行 3221）回填到响应的 `_hidden_params`。
+4. `finalize_proxy_response_cost` 把账定稿（spend 累加）。本场景没配 DB，落库路径自动降级为仅内存计数；有 DB 时由后台写入器聚合后批量写 Postgres，第三层持久化篇展开。
+5. 响应头组装：`fastapi_response.headers.update(...)`（`_process_llm_request() :: +353`，行 3759）里内联调用 `ProxyBaseLLMRequestProcessing :: get_custom_headers() :: +0`（行 2423），产出 `x-litellm-call-id`、`x-litellm-model-id`、`x-litellm-model-name` 等，成本类头由同文件 `cost_headers() :: +0`（行 2100）展开出 `x-litellm-response-cost` 等。
+6. 客户端要的 model 名被还原（`_override_openai_response_model` 调用点在 `_process_llm_request() :: +346`，行 3752，函数定义在行 1835），保证返回的是 `gpt-4o-mini` 而不是内部标识。
 
-本场景没配 DB，spend 落库路径自动降级为仅内存计数；有 DB 时 `_ProxyDBLogger` → `DBSpendUpdateWriter` 聚合后异步批量写 Postgres，第三层第 8/9 篇展开。
+回到 `chat_completion`：`result` 是 `BaseModel` 时经 `model_dump_with_preserved_fields(result, exclude_unset=True)`（`litellm/proxy/proxy_server.py :: chat_completion() :: +70`，行 13360-13361）转成 dict，由 FastAPI 序列化为 JSON。
 
-客户端拿到 JSON。全程状态变化复述一遍：metadata 被注入、call id 生成、deployment 被选中并记数、成本被算出、spend 被异步累加、响应头携带审计字段。
+客户端拿到 JSON。全程状态变化复述一遍：metadata 被注入、call id 生成、deployment 被选中并记数、成本被算出、spend 被累加、响应头携带审计字段。
 
-## 数据形态演变汇总表
+## 数据形态演变表
 
 | 跳 | 数据 | 形态 |
 |---|---|---|
 | 0 | 原始请求 | HTTP bytes |
-| 3 | 请求体 | `dict`（OpenAI 格式）+ metadata |
-| 4 | 增强请求 | dict + `litellm_call_id` + `litellm_logging_obj` |
-| 6 | 选中部署 | `Deployment`（model_name + litellm_params） |
-| 8 | SDK 入参 | OpenAI 风格 kwargs（model 前缀 `openai/`） |
-| 9 | 解析产物 | `(model, provider, api_key, api_base)` 四元组 |
-| 10a | 上游请求 | OpenAI JSON（官方 OpenAI SDK `post("/chat/completions")` 发送） |
-| 10b | 上游响应 | OpenAI JSON |
-| 10c | 翻译后 | `ModelResponse`（Pydantic） |
-| 11 | 带元数据响应 | ModelResponse + `_hidden_params["response_cost"]` |
-| 12 | 客户端响应 | JSON + `x-litellm-*` 头 |
+| 2 | 鉴权产物 | `UserAPIKeyAuth` 对象 |
+| 3 | 请求体 | `dict`（OpenAI 格式）+ `data["metadata"]` |
+| 5 | 增强请求 | dict + `litellm_call_id` + `litellm_logging_obj` |
+| 7 | 选中部署 | `Deployment` 映射（`model_name` + `litellm_params`） |
+| 8 | host 调用参数 | 压缩后的 OpenAI 风格 kwargs（model 仍带 `openai/` 前缀） |
+| 9 | 解析前入参 | `acompletion(model="openai/gpt-4o-mini", messages, ...)` |
+| 10 | 解析产物 | `(model, provider, api_key, api_base)` 四元组 |
+| 11a | 上游请求 | OpenAI JSON（`openai_aclient.post("/chat/completions")` 发送） |
+| 11b | 上游响应 | OpenAI JSON + 原始响应头 |
+| 11c | 翻译后 | `ModelResponse`（Pydantic） |
+| 12 | 带元数据响应 | `ModelResponse` + `_hidden_params["response_cost"]` |
+| 13 | 客户端响应 | JSON dict + `x-litellm-*` 头 |
 
-第二层结束。第三层开始按跳拆解，每跳一篇。
+## 未确认项
+
+- 非流式响应把 `custom_headers` 挂上 `fastapi_response` 的那段返回构造只读到 `fastapi_response.headers.update(...)` 调用点（`+353`，行 3759），该调用点之后的返回语句与 JSONResponse 构造未逐行读完，末段未读取，不臆测。
+- 示例响应体与 `x-litellm-response-cost` 的具体数值为示意，实测值随模型回复与价目表变动，属 `[待运行验证]`。
+- SSE keepalive（`open_sse_before_first_byte`）在本非流式场景的实际行为（是否完全不启用）未逐行追完，属 `[推断]`：从 `base_process_llm_request` 的包裹顺序与非流式返回形态推断它只对流式响应生效。
