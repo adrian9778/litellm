@@ -1,0 +1,17 @@
+{
+  "repo": "/Users/vincent/workspace/16_AI/litellm",
+  "branch": "main",
+  "head_sha": "e46fe2e2dc1bdd19f7953bd47dc3d770876ac74e",
+  "status": "clean",
+  "modified_files": ["docs/agent/memory/2026-11/2026-11-17-fork-sync-script-rewrite.md"],
+  "out_dir": "docs/sourceReader",
+  "progress_dir": "docs/sourceReader/.progress",
+  "current_unit": "U99-readme",
+  "current_phase": "completed",
+  "completed_units": [
+    "U00-style", "U01-skeleton", "U02-end-to-end", "U03-routing", "U04-auth", "U05-cost",
+    "U06-proxy", "U07-providers", "U08-config", "U09-redis", "U10-deploy", "U99-readme"
+  ],
+  "started_at": "2026-11-17T19:25:30+08:00",
+  "last_update": "2026-11-17T20:20:00+08:00"
+}
