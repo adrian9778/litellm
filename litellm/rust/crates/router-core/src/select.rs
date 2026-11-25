@@ -8,9 +8,11 @@ use std::{collections::BTreeMap, sync::Arc};
 use parking_lot::Mutex;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
+use litellm_router_types::RoutingStrategy;
+
 use crate::{
     Call, RouterStateSnapshot,
-    config::{Op, RoutingStrategy},
+    config::Op,
     error::Error,
     health_routing::WhenAllUnhealthy,
     host::{RouterHost, RouterRequest, RoutingContext, SelectStage},
@@ -71,9 +73,12 @@ pub struct Candidates {
     pub name: String,
     pub model_group: String,
     pub kind: ResolveKind,
-    /// Every deployment the caller may use (after the team filter).
+    /// Every deployment the caller may use (after the team filter), less the batch-only ones it skips.
     pub all: Vec<Arc<Deployment>>,
     pub healthy: Vec<Arc<Deployment>>,
+    /// The call skips the group's batch-only deployments, decided before a capability filter
+    /// drops any of the group's other deployments.
+    pub skips_batch_only: bool,
     /// The provider-prefixed spelling the name resolved under (`get_pattern`), when the host
     /// was asked for one.
     pub wildcard_request: Option<String>,
@@ -92,6 +97,15 @@ impl Candidates {
             model: self.failed_model(registry),
             request_ids: Some(self.all.iter().map(|d| d.id.clone()).collect()),
         }
+    }
+
+    /// How many of `all` the request can route to: a call outside the batch and file APIs does
+    /// not count the batch-only deployments it skips.
+    pub(crate) fn routable(&self) -> usize {
+        if self.skips_batch_only {
+            return self.all.iter().filter(|d| !d.serves_only_batches()).count();
+        }
+        self.all.len()
     }
 
     pub(crate) fn failed_model(&self, registry: &Registry) -> String {
@@ -122,6 +136,7 @@ pub(crate) struct SelectInputs {
     /// A fallback hop: `run_async_fallback` pops the request's `_target_order`, so only the
     /// hop's own order applies.
     pub fallback_hop: bool,
+    pub refuse_uncertain: bool,
 }
 
 /// `simple_shuffle`: weighted by `_router_weights[group]`, else `weight`, else `rpm`, else
@@ -251,6 +266,36 @@ fn without_deployments_that_cannot_batch(
         .collect()
 }
 
+pub(crate) fn skips_batch_only(request: &RouterRequest, pool: &[Arc<Deployment>]) -> bool {
+    !request.batch_create
+        && !request.batch_api
+        && !pinned_to_batch_only(request, pool)
+        && pool.iter().any(|d| !d.serves_only_batches())
+}
+
+fn pinned_to_batch_only(request: &RouterRequest, pool: &[Arc<Deployment>]) -> bool {
+    request
+        .pinned_deployment_id
+        .as_deref()
+        .is_some_and(|pinned| {
+            pool.iter()
+                .any(|d| d.id == pinned && d.serves_only_batches())
+        })
+}
+
+fn without_batch_only_deployments(
+    skips_batch_only: bool,
+    healthy: Vec<Arc<Deployment>>,
+) -> Vec<Arc<Deployment>> {
+    if !skips_batch_only {
+        return healthy;
+    }
+    healthy
+        .into_iter()
+        .filter(|d| !d.serves_only_batches())
+        .collect()
+}
+
 impl<H: RouterHost> Call<'_, H> {
     fn context<'a>(
         &'a self,
@@ -325,6 +370,8 @@ impl<H: RouterHost> Call<'_, H> {
             endpoint,
             requested: inputs.requested.as_deref().unwrap_or(name),
             wildcard_request: wildcard_request.as_deref(),
+            refuse_cross_group_litellm_model: !inputs.count_only
+                && snapshot.settings.enable_cross_model_group_collision_check,
         };
         let resolution = resolve_request(
             registry,
@@ -356,6 +403,12 @@ impl<H: RouterHost> Call<'_, H> {
                     _ => resolution.group.clone(),
                 },
             });
+        }
+        let skip_batch_only = skips_batch_only(request, &all);
+        let listed =
+            request.pass_through == Some(PassThrough::Listed) && !resolution.kind.is_single();
+        if !resolution.kind.is_single() && !listed {
+            all = without_batch_only_deployments(skip_batch_only, all);
         }
         // `filter_web_search_deployments` runs before `request_deployments` is read, so every later
         // stage sees the group without the deployments it dropped.
@@ -391,8 +444,6 @@ impl<H: RouterHost> Call<'_, H> {
                 all = capable;
             }
         }
-        let listed =
-            request.pass_through == Some(PassThrough::Listed) && !resolution.kind.is_single();
         if listed {
             all.retain(|d| uses_pass_through(d));
             if all.is_empty() {
@@ -412,13 +463,11 @@ impl<H: RouterHost> Call<'_, H> {
         // A deployment named by its id is served even while it cools down
         // (`get_deployment_by_model_id` returns before the cooldown filter).
         let settings = &snapshot.settings;
-        let cooling = if resolution.kind.is_single() {
+        let cooling = if resolution.kind.is_single() || all.is_empty() {
             Vec::new()
         } else {
-            // `async_get_cooldown_deployments` reads every deployment's, as one throttled batch.
-            self.health()
-                .active_cooldowns(&snapshot.registry.ids())
-                .await?
+            let ids: Vec<String> = all.iter().map(|d| d.id.clone()).collect();
+            self.health().cooling(&ids, !skip_batch_only).await?
         };
         // Health-check filtering runs before the cooldown filter, except for a deployment named
         // by its id and the healthy count a retry decision reads.
@@ -430,8 +479,13 @@ impl<H: RouterHost> Call<'_, H> {
             } else {
                 WhenAllUnhealthy::KeepAll
             };
+            let unpaused: Vec<Arc<Deployment>> = all
+                .iter()
+                .filter(|d| !d.model_info.blocked)
+                .cloned()
+                .collect();
             self.health()
-                .health_check_filter(settings, all.clone(), when_all_unhealthy)
+                .health_check_filter(settings, unpaused, when_all_unhealthy)
                 .await
         };
         let mut healthy: Vec<Arc<Deployment>> = checked
@@ -503,7 +557,8 @@ impl<H: RouterHost> Call<'_, H> {
             let healthy = if resolution.kind.is_single() {
                 healthy
             } else {
-                without_deployments_that_cannot_batch(request, &all, healthy)
+                let healthy = without_deployments_that_cannot_batch(request, &all, healthy);
+                without_batch_only_deployments(skip_batch_only, healthy)
             };
             return Ok(Candidates {
                 name: name.to_owned(),
@@ -511,6 +566,7 @@ impl<H: RouterHost> Call<'_, H> {
                 kind: resolution.kind,
                 all,
                 healthy,
+                skips_batch_only: skip_batch_only,
                 wildcard_request,
                 served_as: None,
             });
@@ -518,7 +574,7 @@ impl<H: RouterHost> Call<'_, H> {
 
         if listed {
             if settings.enable_pre_call_checks && !resolution.kind.is_single() {
-                healthy = self
+                let filtered = self
                     .pre_call_checks(
                         snapshot,
                         op,
@@ -529,6 +585,12 @@ impl<H: RouterHost> Call<'_, H> {
                         healthy,
                     )
                     .await?;
+                healthy = crate::precall::settle(
+                    &resolution.group,
+                    filtered.kept,
+                    &filtered.uncertain,
+                    inputs.refuse_uncertain,
+                )?;
             }
             // Only a priority group narrows a listed pass-through pick by order.
             let priority = resolution.kind == ResolveKind::RoutingGroup
@@ -549,6 +611,7 @@ impl<H: RouterHost> Call<'_, H> {
                 kind: resolution.kind,
                 all,
                 healthy,
+                skips_batch_only: skip_batch_only,
                 wildcard_request,
                 served_as: None,
             });
@@ -569,8 +632,8 @@ impl<H: RouterHost> Call<'_, H> {
                 .await?;
         }
 
-        if settings.enable_pre_call_checks && !resolution.kind.is_single() {
-            healthy = self
+        let uncertain = if settings.enable_pre_call_checks && !resolution.kind.is_single() {
+            let filtered = self
                 .pre_call_checks(
                     snapshot,
                     op,
@@ -581,7 +644,11 @@ impl<H: RouterHost> Call<'_, H> {
                     healthy,
                 )
                 .await?;
-        }
+            healthy = filtered.kept;
+            filtered.uncertain
+        } else {
+            BTreeMap::new()
+        };
 
         if request.filter_tags && !healthy.is_empty() {
             let mut ctx = self.context(
@@ -649,6 +716,13 @@ impl<H: RouterHost> Call<'_, H> {
                 healthy = taking;
             }
         }
+
+        healthy = crate::precall::settle(
+            &resolution.group,
+            healthy,
+            &uncertain,
+            inputs.refuse_uncertain,
+        )?;
 
         // `deployments_admitting_embedding_batch`: an embedding pick keeps the deployments whose
         // input limit admits the batch; when none does, the host keeps what the pick waits for or
@@ -728,6 +802,7 @@ impl<H: RouterHost> Call<'_, H> {
             kind: resolution.kind,
             all,
             healthy,
+            skips_batch_only: skip_batch_only,
             wildcard_request,
             served_as: None,
         })
@@ -744,7 +819,7 @@ impl<H: RouterHost> Call<'_, H> {
         name: &str,
         pool: &[Arc<Deployment>],
         healthy: Vec<Arc<Deployment>>,
-    ) -> Result<Vec<Arc<Deployment>>, Error> {
+    ) -> Result<crate::precall::Filtered, Error> {
         let mut ctx = self.context(
             snapshot,
             op,
@@ -898,5 +973,80 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(picked.id, "b");
+    }
+
+    fn declared(id: &str, params: serde_json::Value, mode: &str) -> Arc<Deployment> {
+        let spec: DeploymentSpec = serde_json::from_value(json!({
+            "model_name": "g", "litellm_params": params, "model_info": {"id": id, "mode": mode},
+        }))
+        .unwrap();
+        Arc::new(Deployment::from_spec(spec).unwrap())
+    }
+
+    fn chat() -> Arc<Deployment> {
+        declared("chat", json!({"model": "azure/chat"}), "chat")
+    }
+
+    fn azure_batch(id: &str) -> Arc<Deployment> {
+        declared(id, json!({"model": "azure/batch"}), "batch")
+    }
+
+    fn ids(deployments: &[Arc<Deployment>]) -> Vec<&str> {
+        deployments.iter().map(|d| d.id.as_str()).collect()
+    }
+
+    #[rstest]
+    #[case::an_azure_model(json!({"model": "azure/batch"}), vec!["chat"])]
+    #[case::an_azure_ai_model(json!({"model": "azure_ai/batch"}), vec!["chat"])]
+    #[case::azure_named_by_custom_llm_provider(
+        json!({"model": "batch", "custom_llm_provider": "azure"}),
+        vec!["chat"]
+    )]
+    #[case::another_provider_serves_more_than_batches(json!({"model": "openai/batch"}), vec!["chat", "batch"])]
+    fn a_call_outside_the_batch_api_skips_azure_batch_only_deployments(
+        #[case] batch_params: serde_json::Value,
+        #[case] expected: Vec<&str>,
+    ) {
+        let pool = vec![chat(), declared("batch", batch_params, "batch")];
+        let kept = without_batch_only_deployments(
+            skips_batch_only(&RouterRequest::default(), &pool),
+            pool.clone(),
+        );
+        assert_eq!(ids(&kept), expected);
+    }
+
+    #[rstest]
+    #[case::a_batch_create(
+        RouterRequest { batch_create: true, ..RouterRequest::default() },
+        vec![chat(), azure_batch("batch")],
+        vec![chat(), azure_batch("batch")],
+        vec!["chat", "batch"]
+    )]
+    #[case::a_batch_or_file_call(
+        RouterRequest { batch_api: true, ..RouterRequest::default() },
+        vec![chat(), azure_batch("batch")],
+        vec![chat(), azure_batch("batch")],
+        vec!["chat", "batch"]
+    )]
+    #[case::a_group_with_only_batch_deployments(
+        RouterRequest::default(),
+        vec![azure_batch("b1"), azure_batch("b2")],
+        vec![azure_batch("b1"), azure_batch("b2")],
+        vec!["b1", "b2"]
+    )]
+    #[case::a_cooling_chat_deployment_leaves_nothing(
+        RouterRequest::default(),
+        vec![chat(), azure_batch("batch")],
+        vec![azure_batch("batch")],
+        vec![]
+    )]
+    fn batch_only_deployments_stay_for_batch_calls_and_batch_only_groups(
+        #[case] request: RouterRequest,
+        #[case] all: Vec<Arc<Deployment>>,
+        #[case] healthy: Vec<Arc<Deployment>>,
+        #[case] expected: Vec<&str>,
+    ) {
+        let kept = without_batch_only_deployments(skips_batch_only(&request, &all), healthy);
+        assert_eq!(ids(&kept), expected);
     }
 }
